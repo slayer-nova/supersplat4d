@@ -17,6 +17,7 @@ import { getSceneConfig } from './scene-config';
 import { registerSelectionEvents } from './selection';
 import { Shortcuts } from './shortcuts';
 import { registerTimelineEvents } from './timeline';
+import { registerClipStore } from './clip-store';
 import { BoxSelection } from './tools/box-selection';
 import { BrushSelection } from './tools/brush-selection';
 import { EyedropperSelection } from './tools/eyedropper-selection';
@@ -257,6 +258,7 @@ const main = async () => {
     registerEditorEvents(events, editHistory, scene);
     registerSelectionEvents(events, scene);
     registerTimelineEvents(events);
+    registerClipStore(events);
     registerCameraPosesEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);

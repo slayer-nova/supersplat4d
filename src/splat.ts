@@ -121,6 +121,12 @@ class Splat extends Element {
     atlasCurrentFrame = -1;
     atlasIndices: Uint32Array | null = null;  // cached identity [0..K-1] for the per-frame re-sort
 
+    // Editor timeline (clip-store) binding. clipSourceId is this node's source handle; _clipVisible
+    // is whether a clip currently covers the playhead (false => hidden, NLE convention). Gated in
+    // with `visible` so the user's eye-toggle and clip-gating compose.
+    clipSourceId: string | null = null;
+    _clipVisible = true;
+
     // Segment management
     segmentCache = new Map<number, Uint32Array>();
     loadingSegments = new Set<number>();
@@ -489,6 +495,12 @@ class Splat extends Element {
 
     destroy() {
         super.destroy();
+        // Drop this node's clip-store source (and its clips) so a removed node leaves no orphan
+        // clips behind and the timeline length recomputes.
+        if (this.clipSourceId) {
+            this.scene.events.fire('clip.unregisterSource', this.clipSourceId);
+            this.clipSourceId = null;
+        }
         this.entity.destroy();
         this.asset.registry.remove(this.asset);
         this.asset.unload();
@@ -615,9 +627,32 @@ class Splat extends Element {
         if (!this.atlasFrames || this.atlasFrameCount === 0) {
             return;
         }
-        const currentFrame = (this.scene.events.invoke('timeline.frame') ?? 0) as number;
-        const frame = ((currentFrame % this.atlasFrameCount) + this.atlasFrameCount) % this.atlasFrameCount;
-        if (frame !== this.atlasCurrentFrame) {
+        const globalFrame = (this.scene.events.invoke('timeline.frame') ?? 0) as number;
+
+        // Resolve which source frame (if any) is active for this node at the global playhead. Until
+        // clip.registerSource runs (deferred one tick after add), fall back to the legacy full-clip
+        // wrap so frame 0 still shows immediately.
+        let active = true;
+        let frame: number;
+        if (this.clipSourceId) {
+            const r = this.scene.events.invoke('clip.resolve', this.clipSourceId, globalFrame) as
+                { active: boolean, localFrame: number };
+            active = r.active;
+            frame = active ? r.localFrame : this.atlasCurrentFrame;
+        } else {
+            frame = ((globalFrame % this.atlasFrameCount) + this.atlasFrameCount) % this.atlasFrameCount;
+        }
+
+        // Hide the node when no clip covers the playhead (NLE convention). Compose with the user's
+        // visible toggle; only re-touch entity.enabled / force a render when the state flips.
+        if (this._clipVisible !== active) {
+            this._clipVisible = active;
+            this.entity.enabled = this.visible && this._clipVisible;
+            this.scene.forceRender = true;
+            this.scene.app.renderNextFrame = true;
+        }
+
+        if (active && frame !== this.atlasCurrentFrame) {
             this.atlasCurrentFrame = frame;
             this.applyAtlasFrame(frame);
         }
@@ -951,11 +986,12 @@ class Splat extends Element {
         // menu/UI gating), and show frame 0. onUpdate then drives per-frame swaps.
         if (this.isAtlas && this.atlasFrames) {
             setTimeout(() => {
-                this.scene.events.fire(
-                    'timeline.setDynamic',
-                    this.atlasFrameCount / this.atlasFps,
-                    this.atlasFps
-                );
+                // Register as a clip-store source. The store creates a default full-range clip on
+                // import (behaviour-identical to the old per-node setDynamic) and owns the timeline
+                // length across ALL nodes, so multiple atlas nodes no longer clobber each other.
+                this.clipSourceId = this.scene.events.invoke(
+                    'clip.registerSource', this.name, this.atlasFrameCount, this.atlasFps
+                ) as string;
                 if (!this.scene.events.functions.has('scene.hasDynamicGaussian')) {
                     this.scene.events.function('scene.hasDynamicGaussian', () => true);
                 }
@@ -1361,7 +1397,8 @@ class Splat extends Element {
             }
         }
 
-        this.entity.enabled = this.visible;
+        // Compose the user's visibility toggle with clip-gating (hidden when off its timeline span).
+        this.entity.enabled = this.visible && this._clipVisible;
     }
 
     focalPoint() {

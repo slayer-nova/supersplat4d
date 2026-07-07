@@ -73,6 +73,37 @@ upside-down and backward. Fix: `atlasOrientation = Vec3(0,0,0)` (identity) — t
 yields an upright, +Z-facing buffer, so with supersplat's default camera (azim ~334, elev ~3) the
 node opens on an upright, face-on 3/4 portrait. Verified on the built bundle.
 
+## Tier 2 — multi-track NLE timeline (Slice A: clip data model)
+
+Turns the single global playhead (every node did `localFrame = globalFrame % itsLength`) into an
+NLE where each node's frames come from **clips** placed on tracks. Foundation slice — data model +
+frame mapping, no UI yet.
+
+- **`src/clip-store.ts`** (new): the single source of truth. A **Source** = an imported node (a 4D
+  atlas `Splat`, `frameCount` frames). A **Clip** = `{sourceId, sourceName, trackIndex, startFrame,
+  sourceIn, sourceOut, timeScale, loop}` — a trimmed, speed-scaled span of one source placed on a
+  track row. Event API on the bus (mirrors `timeline.ts`): `clip.registerSource(name,frameCount,
+  fps)→id`, `clip.unregisterSource`, `clip.update`, `clip.remove`, `clip.list`, and the resolver
+  `clip.resolve(sourceId, globalFrame) → {active, localFrame}`. The store owns the timeline length
+  (`max(startFrame+clipLen)`) and asserts dynamic mode, replacing the per-node `timeline.setDynamic`
+  calls that clobbered each other with multiple nodes.
+- **Import** auto-creates a default full-range clip on the next free track → behaviour-identical to
+  before until the UI lets you move/trim/add clips. Removing a node drops its source + clips.
+- **`src/splat.ts`**: `updateAtlasPlayback` resolves its frame via `clip.resolve`; when **no clip
+  covers the playhead the node is hidden** (`entity.enabled = visible && _clipVisible`, composing
+  with the user's eye-toggle) — NLE convention. `add()` registers the node as a source instead of
+  firing its own `setDynamic`.
+- **Persistence**: clips serialize by `sourceName` (`docSerialize.clips`); on load they wait in a
+  pending list and reattach when the matching node re-registers (`clip.registerSource`), so load
+  order does not matter. (Same-name collision handling is deferred to the UI slice.)
+- **Verified (runtime instrumentation, no UI):** default clip auto-created; resolver correct for
+  trim (`[20,40)`→plays 20‥39), move (`startFrame 30`→hidden before, offset after), and speed
+  (`timeScale 2`→2 source-frames/timeline-frame); node's `entity.enabled` actually flips off in the
+  gap and on over the clip; normal playback still 0% black through the new path.
+- **Scope note:** clip-drives the 4D atlas nodes (the feature target). Native `.sog4d`/TRBF nodes
+  keep their existing `%len` mapping; static nodes stay always-visible. Next: Slice B (multi-track
+  timeline UI), Slice C (per-clip synced `<audio>`).
+
 ## Dev notes
 
 - **`public/bakes/` is gitignored** (the atlas mp4 is tens of MB — runtime test data, not source).
