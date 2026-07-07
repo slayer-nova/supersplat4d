@@ -435,34 +435,134 @@ class TimelinePanel extends Container {
             return Math.max(0, Math.round(best));
         };
 
-        // B2: drag a clip body horizontally to change its startFrame (with snapping). Trim handles
-        // (B3) are excluded so grabbing an edge won't move the whole clip. The bar moves live; the
-        // store update (and rebuild) fires once, on release.
+        // Would placing [start, start+len) on `track` collide with another clip already there?
+        const overlaps = (track: number, start: number, len: number, selfId: string) => {
+            const clips = (events.invoke('clip.list') ?? []) as any[];
+            return clips.some(o => o.id !== selfId && o.trackIndex === track &&
+                start < o.startFrame + clipLen(o) && o.startFrame < start + len);
+        };
+
+        // ---- B4: selection + per-clip inspector (loop / speed / add / delete) ----
+        let selectedClipId: string | null = null;
+        const findClip = (id: string | null) => (events.invoke('clip.list') ?? []).find((c: any) => c.id === id);
+
+        const inspector = document.createElement('div');
+        inspector.className = 'tl-inspector';
+        inspector.style.display = 'none';
+        const inspName = document.createElement('span');
+        inspName.className = 'tl-insp-name';
+        const loopLabel = document.createElement('label');
+        loopLabel.className = 'tl-insp-field';
+        const loopCb = document.createElement('input');
+        loopCb.type = 'checkbox';
+        loopLabel.append(loopCb, document.createTextNode(' loop'));
+        const speedLabel = document.createElement('label');
+        speedLabel.className = 'tl-insp-field';
+        const speedIn = document.createElement('input');
+        speedIn.type = 'number';
+        speedIn.min = '0.1';
+        speedIn.max = '8';
+        speedIn.step = '0.1';
+        speedIn.className = 'tl-insp-speed';
+        speedLabel.append(document.createTextNode('speed '), speedIn);
+        const inspRange = document.createElement('span');
+        inspRange.className = 'tl-insp-range';
+        const addBtn = document.createElement('button');
+        addBtn.className = 'tl-insp-btn';
+        addBtn.textContent = '＋ clip';
+        const delBtn = document.createElement('button');
+        delBtn.className = 'tl-insp-btn tl-insp-del';
+        delBtn.textContent = '✕ delete';
+        inspector.append(inspName, loopLabel, speedLabel, inspRange, addBtn, delBtn);
+
+        const refreshInspector = () => {
+            const c = findClip(selectedClipId);
+            if (!c) {
+                inspector.style.display = 'none';
+                return;
+            }
+            inspector.style.display = 'flex';
+            inspName.textContent = shortName(c.sourceName);
+            loopCb.checked = !!c.loop;
+            speedIn.value = String(c.timeScale);
+            inspRange.textContent = `src ${c.sourceIn}–${c.sourceOut} · @${c.startFrame} · trk ${c.trackIndex + 1}`;
+        };
+
+        const selectClip = (id: string | null) => {
+            selectedClipId = id;
+            trackList.querySelectorAll('.tl-clip').forEach((el) => {
+                el.classList.toggle('selected', (el as HTMLElement).dataset.clipId === id);
+            });
+            refreshInspector();
+        };
+
+        loopCb.addEventListener('change', () => {
+            if (selectedClipId) events.fire('clip.update', selectedClipId, { loop: loopCb.checked });
+        });
+        speedIn.addEventListener('change', () => {
+            const v = parseFloat(speedIn.value);
+            if (selectedClipId && v > 0) events.fire('clip.update', selectedClipId, { timeScale: v });
+        });
+        delBtn.addEventListener('click', () => {
+            if (selectedClipId) {
+                events.fire('clip.remove', selectedClipId);
+                selectClip(null);
+            }
+        });
+        addBtn.addEventListener('click', () => {
+            const c = findClip(selectedClipId);
+            if (c) events.fire('clip.add', c.sourceId, { startFrame: events.invoke('timeline.frame') ?? 0 });
+        });
+
+        // B2/B5: drag a clip body to change its startFrame (snapped) and, vertically, its track row
+        // (cross-track, with overlap prevention). A plain click (no drag) selects the clip. Trim
+        // handles are excluded. The bar moves live; the store update fires once, on release.
         const attachClipDrag = (bar: HTMLElement, c: any) => {
             bar.addEventListener('pointerdown', (e: PointerEvent) => {
                 if (!e.isPrimary) return;
                 if ((e.target as HTMLElement).classList.contains('tl-trim')) return;
                 e.stopPropagation();
                 const startX = e.clientX;
+                const startY = e.clientY;
                 const origStart = c.startFrame;
+                const origTrack = c.trackIndex;
                 const len = clipLen(c);
                 const fpp = framesPerPx();
+                const listTop = trackList.getBoundingClientRect().top;
+                const rowH = 28;
+                const numTracks = trackList.children.length;
                 let newStart = origStart;
+                let targetTrack = origTrack;
+                let didMove = false;
                 bar.setPointerCapture(e.pointerId);
-                bar.classList.add('dragging');
 
                 const onMove = (ev: PointerEvent) => {
+                    if (!didMove && (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)) {
+                        didMove = true;
+                        bar.classList.add('dragging');
+                    }
                     newStart = snapStart(origStart + (ev.clientX - startX) * fpp, len, c.id);
                     bar.style.left = `${xOfFrame(newStart)}px`;
+                    targetTrack = Math.max(0, Math.min(numTracks, Math.floor((ev.clientY - listTop) / rowH)));
+                    Array.from(trackList.children).forEach((row, i) =>
+                        (row as HTMLElement).classList.toggle('drop-target', didMove && i === targetTrack && targetTrack !== origTrack));
                 };
                 const onUp = (ev: PointerEvent) => {
                     bar.releasePointerCapture(ev.pointerId);
                     bar.classList.remove('dragging');
                     bar.removeEventListener('pointermove', onMove);
                     bar.removeEventListener('pointerup', onUp);
-                    if (newStart !== origStart) {
-                        events.fire('clip.update', c.id, { startFrame: newStart });
+                    Array.from(trackList.children).forEach(row => (row as HTMLElement).classList.remove('drop-target'));
+                    if (!didMove) {
+                        selectClip(c.id);
+                        return;
                     }
+                    const patch: any = { startFrame: newStart };
+                    if (targetTrack !== origTrack && !overlaps(targetTrack, newStart, len, c.id)) {
+                        patch.trackIndex = targetTrack;
+                    }
+                    events.fire('clip.update', c.id, patch);
+                    selectClip(c.id);
                 };
                 bar.addEventListener('pointermove', onMove);
                 bar.addEventListener('pointerup', onUp);
@@ -535,6 +635,9 @@ class TimelinePanel extends Container {
 
                 const lane = document.createElement('div');
                 lane.className = 'tl-lane';
+                lane.addEventListener('pointerdown', (ev) => {
+                    if (ev.target === lane) selectClip(null); // click empty lane = deselect
+                });
 
                 for (const c of rowClips) {
                     const x0 = xOfFrame(c.startFrame);
@@ -542,6 +645,7 @@ class TimelinePanel extends Container {
                     const bar = document.createElement('div');
                     bar.className = 'tl-clip';
                     bar.dataset.clipId = c.id;
+                    if (c.id === selectedClipId) bar.classList.add('selected');
                     bar.style.left = `${x0}px`;
                     bar.style.width = `${Math.max(6, x1 - x0)}px`;
                     bar.style.backgroundColor = colorForSource(c.sourceName);
@@ -568,10 +672,14 @@ class TimelinePanel extends Container {
         };
 
         this.append(controlsWrap);
+        this.dom.appendChild(inspector);
         this.dom.appendChild(body);
 
         // rebuild bars when clips change or the timeline length changes; move the playhead per frame
-        events.on('clip.changed', () => rebuildTracks());
+        events.on('clip.changed', () => {
+            rebuildTracks();
+            refreshInspector();
+        });
         events.on('timeline.frames', () => rebuildTracks());
         events.on('timeline.frame', (frame: number) => updatePlayhead(frame));
         const trackResize = new ResizeObserver(() => rebuildTracks());

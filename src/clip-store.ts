@@ -122,6 +122,25 @@ const registerClipStore = (events: Events) => {
         }
     });
 
+    // Add another clip of an existing source (e.g. the same performance placed again at the
+    // playhead). Defaults span the source's full range on the next free track.
+    events.on('clip.add', (sourceId: string, opts: Partial<Clip> = {}) => {
+        const src = sources.get(sourceId);
+        if (!src) return;
+        const len = Math.max(1, src.frameCount);
+        const start = Math.max(0, Math.round(opts.startFrame ?? 0));
+        const sIn = opts.sourceIn ?? 0;
+        const sOut = opts.sourceOut ?? len;
+        const clip: Clip = {
+            id: genId('clip'), sourceId, sourceName: src.name,
+            startFrame: start, sourceIn: sIn, sourceOut: sOut,
+            timeScale: opts.timeScale ?? 1, loop: opts.loop ?? false,
+            trackIndex: opts.trackIndex ?? freeTrackFor(start, Math.max(1, Math.ceil((sOut - sIn) / Math.max(1e-6, opts.timeScale ?? 1))))
+        };
+        clips.push(clip);
+        syncTimeline();
+    });
+
     events.function('clip.list', () => clips.map(c => ({ ...c })));
 
     // --- the resolver: global timeline frame -> this source's frame (if any) -

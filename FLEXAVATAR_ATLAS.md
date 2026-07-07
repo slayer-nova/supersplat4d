@@ -123,8 +123,15 @@ a fixed 92px gutter, so clip bars align to the ruler by construction (`xOfFrame`
   both to the source's real `[0, frameCount]` range in `clip.update`. Verified in Chrome: right-trim
   71→52, left-trim in-point 0→7 with startFrame following (`sourceIn === startFrame`); at playhead 0
   (before the trimmed start) the node correctly hides.
-- **Next:** B4 select + delete + loop/timeScale popover; B5 add-clip + vertical drag between tracks
-  (with overlap prevention). Then Slice C (per-clip synced `<audio>`).
+- **B4 (DONE, verified):** click a clip to select (highlight + a per-clip inspector strip showing
+  name / range / `loop` toggle / `speed`=timeScale / ＋clip / ✕ delete); click empty lane to deselect.
+  Verified: loop→true, speed→2, delete removes + auto-hides the inspector.
+- **B5 (DONE, verified):** `clip.add` places another clip of a source at the playhead on a free
+  track; dragging a clip vertically moves it between track rows (new track past the last row),
+  guarded by an overlap check (`overlaps()`) that rejects the vertical move onto an occupied span.
+  Verified: ＋clip added a 2nd FOOD_3 clip at the playhead; a clip dragged down landed on a new track 2.
+
+**Slice B COMPLETE (B1–B5).** Next: Slice C (per-clip timeline-synced `<audio>`).
 
 ## Dev notes
 
