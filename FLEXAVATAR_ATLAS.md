@@ -114,9 +114,13 @@ a fixed 92px gutter, so clip bars align to the ruler by construction (`xOfFrame`
   DOM) + a playhead line through the lanes; rebuild on `clip.changed`/`timeline.frames`/resize; scrub
   via the existing ruler. Verified in Chrome: two sources (FOOD_3 magenta, BG_Room green) on two
   tracks, a moved clip's bar shifts to its `startFrame`, playhead spans rows and aligns to the ruler.
-- **Next:** B2 drag clip body → `clip.update({startFrame})` + snapping; B3 edge-handle trim →
-  `clip.update({sourceIn/sourceOut})`; B4 select + delete + loop/timeScale popover; B5 add-clip +
-  vertical drag between tracks (with overlap prevention). Then Slice C (per-clip synced `<audio>`).
+- **B2 (DONE, verified):** drag a clip body horizontally → `clip.update({startFrame})`, with snapping
+  to 0, the playhead, and other clips' start/end edges (~8px magnet). Bar moves live, commits on
+  release. Verified in Chrome: dragged FOOD_3 0→11 (free) then snapped exactly to the playhead at 30;
+  timeline length recomputed.
+- **Next:** B3 edge-handle trim → `clip.update({sourceIn/sourceOut})`; B4 select + delete +
+  loop/timeScale popover; B5 add-clip + vertical drag between tracks (with overlap prevention). Then
+  Slice C (per-clip synced `<audio>`).
 
 ## Dev notes
 

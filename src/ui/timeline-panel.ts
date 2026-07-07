@@ -408,6 +408,67 @@ class TimelinePanel extends Container {
             playhead.style.left = `${GUTTER_W + xOfFrame(frame)}px`;
         };
 
+        const framesPerPx = () => (numFrames() - 1) / laneWidth();
+
+        // Snap a candidate start frame to nearby magnets — 0, the playhead, and every OTHER clip's
+        // start/end edge (for our start butting to them, or our end butting to them) — within an
+        // ~8px threshold. Returns an integer frame >= 0.
+        const snapStart = (rawStart: number, len: number, selfId: string) => {
+            const others = (events.invoke('clip.list') ?? []) as any[];
+            const playFrame = (events.invoke('timeline.frame') ?? 0) as number;
+            const targets = [0, playFrame];
+            for (const o of others) {
+                if (o.id === selfId) continue;
+                const oEnd = o.startFrame + clipLen(o);
+                targets.push(o.startFrame, oEnd, o.startFrame - len, oEnd - len);
+            }
+            const snap = Math.max(1, Math.round(8 * framesPerPx()));
+            let best = rawStart;
+            let bestD = snap + 1;
+            for (const t of targets) {
+                const d = Math.abs(rawStart - t);
+                if (d <= snap && d < bestD) {
+                    best = t;
+                    bestD = d;
+                }
+            }
+            return Math.max(0, Math.round(best));
+        };
+
+        // B2: drag a clip body horizontally to change its startFrame (with snapping). Trim handles
+        // (B3) are excluded so grabbing an edge won't move the whole clip. The bar moves live; the
+        // store update (and rebuild) fires once, on release.
+        const attachClipDrag = (bar: HTMLElement, c: any) => {
+            bar.addEventListener('pointerdown', (e: PointerEvent) => {
+                if (!e.isPrimary) return;
+                if ((e.target as HTMLElement).classList.contains('tl-trim')) return;
+                e.stopPropagation();
+                const startX = e.clientX;
+                const origStart = c.startFrame;
+                const len = clipLen(c);
+                const fpp = framesPerPx();
+                let newStart = origStart;
+                bar.setPointerCapture(e.pointerId);
+                bar.classList.add('dragging');
+
+                const onMove = (ev: PointerEvent) => {
+                    newStart = snapStart(origStart + (ev.clientX - startX) * fpp, len, c.id);
+                    bar.style.left = `${xOfFrame(newStart)}px`;
+                };
+                const onUp = (ev: PointerEvent) => {
+                    bar.releasePointerCapture(ev.pointerId);
+                    bar.classList.remove('dragging');
+                    bar.removeEventListener('pointermove', onMove);
+                    bar.removeEventListener('pointerup', onUp);
+                    if (newStart !== origStart) {
+                        events.fire('clip.update', c.id, { startFrame: newStart });
+                    }
+                };
+                bar.addEventListener('pointermove', onMove);
+                bar.addEventListener('pointerup', onUp);
+            });
+        };
+
         const rebuildTracks = () => {
             trackList.innerHTML = '';
             const clips = (events.invoke('clip.list') ?? []) as any[];
@@ -445,6 +506,7 @@ class TimelinePanel extends Container {
                     trimR.className = 'tl-trim tl-trim-r';
 
                     bar.append(trimL, label, trimR);
+                    attachClipDrag(bar, c);
                     lane.appendChild(bar);
                 }
 
