@@ -118,9 +118,13 @@ a fixed 92px gutter, so clip bars align to the ruler by construction (`xOfFrame`
   to 0, the playhead, and other clips' start/end edges (~8px magnet). Bar moves live, commits on
   release. Verified in Chrome: dragged FOOD_3 0→11 (free) then snapped exactly to the playhead at 30;
   timeline length recomputed.
-- **Next:** B3 edge-handle trim → `clip.update({sourceIn/sourceOut})`; B4 select + delete +
-  loop/timeScale popover; B5 add-clip + vertical drag between tracks (with overlap prevention). Then
-  Slice C (per-clip synced `<audio>`).
+- **B3 (DONE, verified):** drag the left/right edge handles to trim. Right handle → `sourceOut`;
+  left handle → `sourceIn` + `startFrame` together (content-anchored, NLE trim-in). The store clamps
+  both to the source's real `[0, frameCount]` range in `clip.update`. Verified in Chrome: right-trim
+  71→52, left-trim in-point 0→7 with startFrame following (`sourceIn === startFrame`); at playhead 0
+  (before the trimmed start) the node correctly hides.
+- **Next:** B4 select + delete + loop/timeScale popover; B5 add-clip + vertical drag between tracks
+  (with overlap prevention). Then Slice C (per-clip synced `<audio>`).
 
 ## Dev notes
 

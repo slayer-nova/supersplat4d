@@ -103,6 +103,14 @@ const registerClipStore = (events: Events) => {
         const c = clips.find(x => x.id === id);
         if (!c) return;
         Object.assign(c, patch);
+        // Clamp against the source's real frame range so trims/moves can never go out of bounds,
+        // whatever the UI sends: 0 <= sourceIn < sourceOut <= frameCount, startFrame >= 0.
+        const src = sources.get(c.sourceId);
+        const maxF = src ? Math.max(1, src.frameCount) : Math.max(1, c.sourceOut);
+        c.sourceIn = Math.min(Math.max(0, Math.round(c.sourceIn)), maxF - 1);
+        c.sourceOut = Math.min(Math.max(c.sourceIn + 1, Math.round(c.sourceOut)), maxF);
+        c.startFrame = Math.max(0, Math.round(c.startFrame));
+        c.timeScale = Math.max(0.01, c.timeScale);
         syncTimeline();
     });
 

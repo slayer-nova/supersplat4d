@@ -469,6 +469,55 @@ class TimelinePanel extends Container {
             });
         };
 
+        // B3: drag a clip's left/right edge handle to trim. The left handle moves the in-point
+        // (sourceIn) AND the timeline start together so the content stays anchored (NLE ripple-free
+        // trim-in); the right handle moves the out-point (sourceOut). The store clamps both to the
+        // source's real [0, frameCount] range on commit. Bar resizes live; commit fires on release.
+        const attachTrimDrag = (handle: HTMLElement, bar: HTMLElement, c: any, side: 'l' | 'r') => {
+            handle.addEventListener('pointerdown', (e: PointerEvent) => {
+                if (!e.isPrimary) return;
+                e.stopPropagation();
+                const startX = e.clientX;
+                const fpp = framesPerPx();
+                const ts = Math.max(1e-6, c.timeScale);
+                const origStart = c.startFrame;
+                const origIn = c.sourceIn;
+                const origOut = c.sourceOut;
+                let patch: any = null;
+                handle.setPointerCapture(e.pointerId);
+                bar.classList.add('dragging');
+
+                const applyVisual = (start: number, inn: number, out: number) => {
+                    const len = Math.max(1, Math.ceil((out - inn) / ts));
+                    bar.style.left = `${xOfFrame(start)}px`;
+                    bar.style.width = `${Math.max(6, xOfFrame(start + len) - xOfFrame(start))}px`;
+                };
+
+                const onMove = (ev: PointerEvent) => {
+                    const dTl = Math.round((ev.clientX - startX) * fpp);
+                    if (side === 'l') {
+                        const inn = Math.min(Math.max(0, Math.round(origIn + dTl * ts)), origOut - 1);
+                        const start = Math.max(0, origStart + Math.round((inn - origIn) / ts));
+                        patch = { startFrame: start, sourceIn: inn };
+                        applyVisual(start, inn, origOut);
+                    } else {
+                        const out = Math.max(origIn + 1, Math.round(origOut + dTl * ts));
+                        patch = { sourceOut: out };
+                        applyVisual(origStart, origIn, out);
+                    }
+                };
+                const onUp = (ev: PointerEvent) => {
+                    handle.releasePointerCapture(ev.pointerId);
+                    bar.classList.remove('dragging');
+                    handle.removeEventListener('pointermove', onMove);
+                    handle.removeEventListener('pointerup', onUp);
+                    if (patch) events.fire('clip.update', c.id, patch);
+                };
+                handle.addEventListener('pointermove', onMove);
+                handle.addEventListener('pointerup', onUp);
+            });
+        };
+
         const rebuildTracks = () => {
             trackList.innerHTML = '';
             const clips = (events.invoke('clip.list') ?? []) as any[];
@@ -507,6 +556,8 @@ class TimelinePanel extends Container {
 
                     bar.append(trimL, label, trimR);
                     attachClipDrag(bar, c);
+                    attachTrimDrag(trimL, bar, c, 'l');
+                    attachTrimDrag(trimR, bar, c, 'r');
                     lane.appendChild(bar);
                 }
 
