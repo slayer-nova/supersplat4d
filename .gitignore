@@ -27,3 +27,6 @@ README_DEPLOYMENT_CN.md
 
 example/
 docs/
+
+# FlexAvatar atlas bakes — runtime test data (atlas.mp4 is tens of MB); see FLEXAVATAR_ATLAS.md
+public/bakes/

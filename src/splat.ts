@@ -110,6 +110,17 @@ class Splat extends Element {
     dynBaseUrl = '';
     sog4dSegments: Map<string, ArrayBuffer> | null = null;  // Preloaded segments from SOG4D
 
+    // FlexAvatar atlas-video playback: a set of pre-decoded, index-stable per-frame GSplatDatas
+    // driven by the shared timeline. Distinct from `isDynamic` (dyn/sog4d motion model): atlas
+    // frames carry FULL per-splat attributes (pos/scale/rot/color) that we swap into the GPU
+    // textures in place each frame, rather than integrating motion in the shader.
+    isAtlas = false;
+    atlasFrames: GSplatData[] | null = null;
+    atlasFps = 30;
+    atlasFrameCount = 0;
+    atlasCurrentFrame = -1;
+    atlasIndices: Uint32Array | null = null;  // cached identity [0..K-1] for the per-frame re-sort
+
     // Segment management
     segmentCache = new Map<number, Uint32Array>();
     loadingSegments = new Set<number>();
@@ -559,6 +570,59 @@ class Splat extends Element {
         }
     }
 
+    // Swap the atlas node's GPU data to a specific pre-decoded frame, IN PLACE (no
+    // destroy/recreate). Rewrites the per-splat transform (position/scale/rotation) + color
+    // textures via the GSplatResource's own updaters. Every atlas frame has the same fixed
+    // count K and index→surface mapping, so slot j stays the same point.
+    applyAtlasFrame(frameIndex: number) {
+        if (!this.atlasFrames) {
+            return;
+        }
+        const gd = this.atlasFrames[frameIndex];
+        if (!gd) {
+            return;
+        }
+
+        const instance = this.entity.gsplat.instance;
+        const resource = instance.resource as GSplatResource;
+
+        // Re-upload transformA/transformB (pos+scale+rot) and splatColor textures. These are the
+        // exact methods the resource constructor uses to fill them; lock/unlock marks them for GPU
+        // re-upload, applied at bind time during the next render. The material reads these textures,
+        // so the next render shows the new frame. (Verified: these uploads alone render clean — 0%
+        // black — the sorter's frame-0 depth order stays visually valid for tiny talking-head
+        // inter-frame motion, so no per-frame resort is needed; the order self-corrects when the
+        // camera next moves.)
+        resource.updateTransformData(gd);
+        resource.updateColorData(gd);
+
+        // DO NOT call makeLocalBoundDirty() here. It sets scene.boundDirty, which forces
+        // DataProcessor.calcBound() — a GPU pass (drawQuadWithShader + setRenderTarget +
+        // updateBegin/End + readPixels) — to run mid-frame. That switches the active render target
+        // away from the backbuffer and clobbers this frame's main scene render, blacking out the
+        // ENTIRE canvas (splats AND the HUD) on exactly the frames playback advances => the black
+        // flash. Empirically this one call was the whole cause: with it, ~50% of playback frames go
+        // black; without it, 0%. The node's bound is computed once at load and is fine for a
+        // talking head (tiny, index-stable motion); it does not need per-frame recomputation.
+        this.scene.forceRender = true;
+        this.scene.app.renderNextFrame = true;
+    }
+
+    // Per-tick atlas playback driver (called from onUpdate every frame). Reads the shared
+    // timeline frame, wraps to [0, T), and swaps to that pre-decoded frame when it changes.
+    // Drives both playback (play button advances timeline.frame) and scrubbing (setFrame).
+    private updateAtlasPlayback() {
+        if (!this.atlasFrames || this.atlasFrameCount === 0) {
+            return;
+        }
+        const currentFrame = (this.scene.events.invoke('timeline.frame') ?? 0) as number;
+        const frame = ((currentFrame % this.atlasFrameCount) + this.atlasFrameCount) % this.atlasFrameCount;
+        if (frame !== this.atlasCurrentFrame) {
+            this.atlasCurrentFrame = frame;
+            this.applyAtlasFrame(frame);
+        }
+    }
+
     // Update motion and trbf textures from GSplatData
     private updateDynamicTextures() {
         if (!this.isDynamic || !this.motionTexture || !this.trbfTexture) {
@@ -882,6 +946,24 @@ class Splat extends Element {
         // we must update state in case the state data was loaded from ply
         this.updateState();
 
+        // Initialize FlexAvatar atlas playback: switch the timeline into dynamic mode (frames
+        // = T, rate = fps) so the play button loops the clip, expose hasDynamicGaussian (used by
+        // menu/UI gating), and show frame 0. onUpdate then drives per-frame swaps.
+        if (this.isAtlas && this.atlasFrames) {
+            setTimeout(() => {
+                this.scene.events.fire(
+                    'timeline.setDynamic',
+                    this.atlasFrameCount / this.atlasFps,
+                    this.atlasFps
+                );
+                if (!this.scene.events.functions.has('scene.hasDynamicGaussian')) {
+                    this.scene.events.function('scene.hasDynamicGaussian', () => true);
+                }
+            }, 0);
+            this.applyAtlasFrame(0);
+            this.atlasCurrentFrame = 0;
+        }
+
         // Initialize dynamic gaussian: load first segment and set initial time
         if (this.isDynamic && this.dynManifest) {
             // Notify timeline to switch to dynamic mode
@@ -1156,6 +1238,10 @@ class Splat extends Element {
     // 2. 排序
     // 3. 渲染
     onUpdate(deltaTime: number) {
+        if (this.isAtlas) {
+            this.updateAtlasPlayback();
+            return;
+        }
         if (!this.isDynamic || !this.dynManifest) {
             return;
         }

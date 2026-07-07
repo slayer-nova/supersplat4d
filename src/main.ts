@@ -280,7 +280,31 @@ const main = async () => {
     const loadList = url.searchParams.getAll('load');
     const filenameList = url.searchParams.getAll('filename');
 
-    if (loadList.length > 0) {
+    // FlexAvatar atlas-video bake(s): ?loadatlas=./bakes/FOOD_3/ pre-decodes ALL frames of
+    // the bake's atlas.mp4 and adds a Splat node that PLAYS them on the shared timeline (press
+    // play, or scrub) — upright, orbit-able, transformable, a normal Scene Manager entry.
+    // Optional &atlasframe=N pins a single static frame instead (no animation).
+    const atlasList = url.searchParams.getAll('loadatlas');
+    if (atlasList.length > 0) {
+        const frameParam = url.searchParams.get('atlasframe');
+        const animate = frameParam === null;                 // no explicit frame → animate
+        const frameIndex = frameParam ? parseInt(frameParam, 10) : 0;
+        for (const value of atlasList) {
+            let base = decodeURIComponent(value);
+            if (!base.endsWith('/')) base += '/';
+            try {
+                console.log(`🧑 Loading FlexAvatar atlas bake: ${base} (${animate ? 'animated, all frames' : `static frame ${frameIndex}`})`);
+                const splat = await scene.assetLoader.loadAtlas(base, frameIndex, animate);
+                scene.add(splat);
+                events.fire('selection', splat);
+                events.fire('camera.focus');
+                events.fire('doc.setName', base.replace(/\/+$/, '').split('/').pop() || 'atlas');
+                console.log(`✅ Added FlexAvatar atlas Splat: ${splat.numSplats} splats`);
+            } catch (error) {
+                console.error(`⚠️ Failed to load atlas bake ${base}:`, error);
+            }
+        }
+    } else if (loadList.length > 0) {
         // Load from URL params
         for (const [i, value] of loadList.entries()) {
             const decoded = decodeURIComponent(value);

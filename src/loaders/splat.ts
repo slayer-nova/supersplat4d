@@ -80,4 +80,4 @@ const loadSplat = async (assetSource: AssetSource) => {
     return deserializeFromSSplat(await source.arrayBuffer());
 };
 
-export { loadSplat };
+export { loadSplat, deserializeFromSSplat };

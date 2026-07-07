@@ -1,6 +1,7 @@
 import { AppBase, Asset, GSplatData, GSplatResource, Vec3 } from 'playcanvas';
 
 import { Events } from './events';
+import { loadAtlasFrame, loadAtlasAllFrames } from './loaders/atlas';
 import { AssetSource } from './loaders/asset-source';
 import { loadDyn } from './loaders/dyn';
 import { checkPlyIsDynamic, loadDynamicPly, DynamicPlyParams } from './loaders/dynamic-ply';
@@ -12,6 +13,13 @@ import { Splat } from './splat';
 
 const defaultOrientation = new Vec3(0, 0, 180);
 const lccOrientation = new Vec3(90, 0, 180);
+// FlexAvatar atlas nodes need NO node rotation: our atlas decode (loaders/atlas.ts) already emits
+// a buffer that is upright (Y-up) and face-toward-+Z in supersplat's world, so identity orientation
+// opens on an upright, face-on 3/4 portrait under the default camera (azim ~334, elev ~3). A normal
+// .splat needs defaultOrientation's roll-180 (its buffer is Y-down); ours does not — the atlas rebuild
+// bakes that in. (The old Vec3(0,180,180) ≡ 180° about X flipped the already-correct buffer BOTH
+// upside-down AND backward, which is why atlas nodes used to open on the upside-down back of the head.)
+const atlasOrientation = new Vec3(0, 0, 0);
 
 // handles loading gltf container assets
 class AssetLoader {
@@ -93,6 +101,49 @@ class AssetLoader {
             if (!assetSource.animationFrame) {
                 this.events.fire('stopSpinner');
             }
+        }
+    }
+
+    // Load a FlexAvatar atlas-video bake as a Splat node. `base` is the bake directory URL
+    // (must end with '/'), served same-origin. The decoded per-frame buffer is antimatter15
+    // .splat layout, so it takes the same upright orientation as a .splat file (atlasOrientation:
+    // roll 180 for FLEX Y-down + yaw 180 to face the camera).
+    //
+    // animate=false → a single static frame (frameIndex), the ?atlasframe=N path (unchanged).
+    // animate=true  → pre-decode ALL T frames (fixed index-stable set) and return a Splat that
+    //                 plays them on the timeline (frame 0 shown until timeline drives it).
+    async loadAtlas(base: string, frameIndex = 0, animate = false) {
+        this.events.fire('startSpinner');
+        try {
+            const wrap = (gsplatData: GSplatData) => {
+                const filename = `${base.replace(/\/+$/, '').split('/').pop() || 'atlas'}.splat`;
+                const asset = new Asset(filename, 'gsplat', {
+                    url: `atlas-${Date.now()}`,
+                    filename
+                });
+                this.app.assets.add(asset);
+                asset.resource = new GSplatResource(this.app.graphicsDevice, gsplatData);
+                return new Splat(asset, atlasOrientation);
+            };
+
+            if (!animate) {
+                const gsplatData: GSplatData = await loadAtlasFrame(base, frameIndex);
+                return wrap(gsplatData);
+            }
+
+            // Animated: pre-decode every frame up front, wrap frame 0 into the node, and attach
+            // the frame set. Splat.add() flips the timeline to dynamic mode and onUpdate drives
+            // the per-frame in-place swap.
+            const { meta, frames, numSplats } = await loadAtlasAllFrames(base);
+            const splat = wrap(frames[0]);
+            splat.isAtlas = true;
+            splat.atlasFrames = frames;
+            splat.atlasFps = meta.fps;
+            splat.atlasFrameCount = frames.length;
+            console.log(`🎬 atlas node ready: ${numSplats} splats × ${frames.length} frames @ ${meta.fps}fps`);
+            return splat;
+        } finally {
+            this.events.fire('stopSpinner');
         }
     }
 }
