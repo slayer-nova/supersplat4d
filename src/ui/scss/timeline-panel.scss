@@ -160,13 +160,25 @@
     }
 
     // ---- multi-track NLE body: gutter + ruler + stacked track lanes ----
+
+    // draggable divider at the panel's top edge — resizes the timeline (viewport above flexes)
+    > .tl-resize {
+        flex: 0 0 6px;
+        height: 6px;
+        cursor: row-resize;
+        background-color: $bcg-primary;
+        border-top: 1px solid $bcg-darkest;
+
+        &:hover,
+        &.dragging {
+            background-color: $clr-hilight;
+        }
+    }
+
     > .tl-body {
         position: relative;
         display: flex;
         flex-direction: column;
-        max-height: 220px;
-        overflow-y: auto;
-        overflow-x: hidden;
     }
 
     .tl-ruler-row,
@@ -198,6 +210,8 @@
     .tl-track-list {
         display: flex;
         flex-direction: column;
+        overflow-y: auto;   // vertical scroll when there are more tracks than fit the set height
+        overflow-x: hidden;
     }
 
     .tl-track-row {

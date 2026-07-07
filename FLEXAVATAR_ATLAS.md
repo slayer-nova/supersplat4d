@@ -131,7 +131,13 @@ a fixed 92px gutter, so clip bars align to the ruler by construction (`xOfFrame`
   guarded by an overlap check (`overlaps()`) that rejects the vertical move onto an occupied span.
   Verified: ＋clip added a 2nd FOOD_3 clip at the playhead; a clip dragged down landed on a new track 2.
 
-**Slice B COMPLETE (B1–B5).** Next: Slice C (per-clip timeline-synced `<audio>`).
+- **B-polish (DONE, verified):** a **resize divider** on the panel's top edge (`.tl-resize`, drag to
+  grow/shrink the timeline; the viewport above flexes since both live in the `#main-container` flex
+  column), and **vertical scroll** on the track-list (`overflow-y: auto`) so many tracks scroll with
+  the ruler kept fixed. Verified: 6 track rows scroll at the default 96px height; dragging the handle
+  up grew the track area to 236px showing all rows.
+
+**Slice B COMPLETE (B1–B5 + resize/scroll polish).** Next: Slice C (per-clip timeline-synced `<audio>`).
 
 ## Dev notes
 

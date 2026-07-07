@@ -671,9 +671,39 @@ class TimelinePanel extends Container {
             updatePlayhead((events.invoke('timeline.frame') ?? 0) as number);
         };
 
+        // Resizable timeline: a drag handle on the panel's top edge adjusts the (scrollable)
+        // track-list height, growing/shrinking the whole panel — the viewport above flexes to fit.
+        // The track-list scrolls vertically once there are more tracks than the set height shows.
+        const resizeHandle = document.createElement('div');
+        resizeHandle.className = 'tl-resize';
+        let trackListH = 96; // default ~3 rows visible, then scroll
+        trackList.style.height = `${trackListH}px`;
+        resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
+            if (!e.isPrimary) return;
+            e.preventDefault();
+            const startY = e.clientY;
+            const startH = trackListH;
+            resizeHandle.setPointerCapture(e.pointerId);
+            resizeHandle.classList.add('dragging');
+            const onMove = (ev: PointerEvent) => {
+                const maxH = Math.round(window.innerHeight * 0.6);
+                trackListH = Math.max(28, Math.min(maxH, startH - (ev.clientY - startY))); // drag up = taller
+                trackList.style.height = `${trackListH}px`;
+            };
+            const onUp = (ev: PointerEvent) => {
+                resizeHandle.releasePointerCapture(ev.pointerId);
+                resizeHandle.classList.remove('dragging');
+                resizeHandle.removeEventListener('pointermove', onMove);
+                resizeHandle.removeEventListener('pointerup', onUp);
+            };
+            resizeHandle.addEventListener('pointermove', onMove);
+            resizeHandle.addEventListener('pointerup', onUp);
+        });
+
         this.append(controlsWrap);
         this.dom.appendChild(inspector);
         this.dom.appendChild(body);
+        this.dom.insertBefore(resizeHandle, this.dom.firstChild); // handle sits at the very top edge
 
         // rebuild bars when clips change or the timeline length changes; move the playhead per frame
         events.on('clip.changed', () => {
