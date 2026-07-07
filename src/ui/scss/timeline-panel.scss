@@ -159,8 +159,124 @@
         }
     }
 
-    > #ticks {
+    // ---- multi-track NLE body: gutter + ruler + stacked track lanes ----
+    > .tl-body {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        max-height: 220px;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    .tl-ruler-row,
+    .tl-track-row {
+        display: flex;
+        flex-direction: row;
+        align-items: stretch;
+    }
+
+    .tl-gutter {
+        width: 92px;
+        flex: 0 0 92px;
+        box-sizing: border-box;
+        background-color: $bcg-primary;
+        border-right: 1px solid $bcg-darkest;
+        overflow: hidden;
+    }
+
+    .tl-gutter-head {
         height: 38px;
+    }
+
+    .tl-lane-wrap {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+    }
+
+    .tl-track-list {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .tl-track-row {
+        height: 28px;
+        border-top: 1px solid $bcg-darkest;
+    }
+
+    .tl-track-label {
+        font-size: 11px;
+        color: $clr-default;
+        line-height: 28px;
+        padding: 0 8px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    .tl-lane {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+        background-color: $bcg-darkest;
+    }
+
+    .tl-clip {
+        position: absolute;
+        top: 3px;
+        bottom: 3px;
+        border-radius: 4px;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        overflow: hidden;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+
+        &:hover {
+            border-color: $clr-hilight;
+        }
+    }
+
+    .tl-clip-label {
+        flex: 1 1 0;
+        padding: 0 8px;
+        font-size: 11px;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        pointer-events: none;
+    }
+
+    .tl-trim {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 7px;
+        cursor: ew-resize;
+
+        &.tl-trim-l { left: 0; }
+        &.tl-trim-r { right: 0; }
+
+        &:hover {
+            background-color: rgba(255, 255, 255, 0.28);
+        }
+    }
+
+    .tl-playhead {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background-color: $clr-hilight;
+        pointer-events: none;
+        z-index: 5;
+    }
+
+    #ticks {
+        height: 38px;
+        width: 100%;
         background-color: $bcg-darkest;
 
         > #ticks-area {

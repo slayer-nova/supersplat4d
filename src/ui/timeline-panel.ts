@@ -360,8 +360,112 @@ class TimelinePanel extends Container {
 
         const ticks = new Ticks(events, tooltips);
 
+        // ---- multi-track timeline body (NLE): left name gutter + ruler + stacked track lanes ----
+        // The ruler (Ticks) and every track lane are equal-width flex cells sitting to the right of
+        // a fixed-width gutter, so clip bars line up with the frame ruler by construction. Bars are
+        // rendered from the clip store (clip.list) and rebuilt on clip.changed; the playhead is a
+        // vertical line through the lanes. B1 = render + scrub only (drag/trim/select come next).
+        const GUTTER_W = 92;
+        const PAD = 20; // must match Ticks' offsetFromFrame padding so bars align with the ruler
+
+        // Stable per-source colour (hash the name to a hue) so each object's clips read as one group.
+        const colorForSource = (name: string) => {
+            let h = 0;
+            for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+            return `hsl(${h % 360}, 42%, 42%)`;
+        };
+        const shortName = (name: string) => name.replace(/\.(splat|sog4d|ply|lcc)$/i, '');
+        const clipLen = (c: any) => Math.max(1, Math.ceil((c.sourceOut - c.sourceIn) / Math.max(1e-6, c.timeScale)));
+
+        // ruler row: gutter spacer + the existing Ticks ruler (moved into a lane-wrap)
+        const rulerRow = document.createElement('div');
+        rulerRow.className = 'tl-ruler-row';
+        const rulerGutter = document.createElement('div');
+        rulerGutter.className = 'tl-gutter tl-gutter-head';
+        const rulerLaneWrap = document.createElement('div');
+        rulerLaneWrap.className = 'tl-lane-wrap';
+        rulerLaneWrap.appendChild(ticks.dom);
+        rulerRow.appendChild(rulerGutter);
+        rulerRow.appendChild(rulerLaneWrap);
+
+        // track rows (rebuilt from the clip store) and the playhead line
+        const trackList = document.createElement('div');
+        trackList.className = 'tl-track-list';
+        const playhead = document.createElement('div');
+        playhead.className = 'tl-playhead';
+
+        const body = document.createElement('div');
+        body.className = 'tl-body';
+        body.appendChild(rulerRow);
+        body.appendChild(trackList);
+        body.appendChild(playhead);
+
+        const laneWidth = () => Math.max(1, rulerLaneWrap.clientWidth - PAD * 2);
+        const numFrames = () => Math.max(2, (events.invoke('timeline.frames') ?? 180) as number);
+        const xOfFrame = (frame: number) => PAD + (frame / (numFrames() - 1)) * laneWidth();
+
+        const updatePlayhead = (frame: number) => {
+            playhead.style.left = `${GUTTER_W + xOfFrame(frame)}px`;
+        };
+
+        const rebuildTracks = () => {
+            trackList.innerHTML = '';
+            const clips = (events.invoke('clip.list') ?? []) as any[];
+            const numTracks = clips.reduce((m, c) => Math.max(m, c.trackIndex + 1), 1);
+
+            for (let t = 0; t < numTracks; t++) {
+                const rowClips = clips.filter(c => c.trackIndex === t);
+
+                const row = document.createElement('div');
+                row.className = 'tl-track-row';
+
+                const gutter = document.createElement('div');
+                gutter.className = 'tl-gutter tl-track-label';
+                gutter.textContent = rowClips.length ? shortName(rowClips[0].sourceName) : `Track ${t + 1}`;
+
+                const lane = document.createElement('div');
+                lane.className = 'tl-lane';
+
+                for (const c of rowClips) {
+                    const x0 = xOfFrame(c.startFrame);
+                    const x1 = xOfFrame(c.startFrame + clipLen(c));
+                    const bar = document.createElement('div');
+                    bar.className = 'tl-clip';
+                    bar.dataset.clipId = c.id;
+                    bar.style.left = `${x0}px`;
+                    bar.style.width = `${Math.max(6, x1 - x0)}px`;
+                    bar.style.backgroundColor = colorForSource(c.sourceName);
+
+                    const trimL = document.createElement('div');
+                    trimL.className = 'tl-trim tl-trim-l';
+                    const label = document.createElement('span');
+                    label.className = 'tl-clip-label';
+                    label.textContent = shortName(c.sourceName);
+                    const trimR = document.createElement('div');
+                    trimR.className = 'tl-trim tl-trim-r';
+
+                    bar.append(trimL, label, trimR);
+                    lane.appendChild(bar);
+                }
+
+                row.append(gutter, lane);
+                trackList.appendChild(row);
+            }
+            updatePlayhead((events.invoke('timeline.frame') ?? 0) as number);
+        };
+
         this.append(controlsWrap);
-        this.append(ticks);
+        this.dom.appendChild(body);
+
+        // rebuild bars when clips change or the timeline length changes; move the playhead per frame
+        events.on('clip.changed', () => rebuildTracks());
+        events.on('timeline.frames', () => rebuildTracks());
+        events.on('timeline.frame', (frame: number) => updatePlayhead(frame));
+        const trackResize = new ResizeObserver(() => rebuildTracks());
+        requestAnimationFrame(() => {
+            trackResize.observe(rulerLaneWrap);
+            rebuildTracks();
+        });
 
         // ui handlers
 

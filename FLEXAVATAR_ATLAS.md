@@ -101,8 +101,22 @@ frame mapping, no UI yet.
   (`timeScale 2`→2 source-frames/timeline-frame); node's `entity.enabled` actually flips off in the
   gap and on over the clip; normal playback still 0% black through the new path.
 - **Scope note:** clip-drives the 4D atlas nodes (the feature target). Native `.sog4d`/TRBF nodes
-  keep their existing `%len` mapping; static nodes stay always-visible. Next: Slice B (multi-track
-  timeline UI), Slice C (per-clip synced `<audio>`).
+  keep their existing `%len` mapping; static nodes stay always-visible.
+
+### Slice B — multi-track timeline UI (Premiere-style; cross-track drag in v1)
+
+Rewrites `src/ui/timeline-panel.ts` from a single ruler row into a left name-gutter + frame ruler +
+stacked track lanes, fed by the clip store. Ruler and every lane are equal-width flex cells right of
+a fixed 92px gutter, so clip bars align to the ruler by construction (`xOfFrame` mirrors the Ticks
+`PAD`). Styling in `src/ui/scss/timeline-panel.scss` (dark theme, accent `#937EE2`).
+
+- **B1 (DONE, verified):** render track rows + per-source-colored clip bars (name label + trim-handle
+  DOM) + a playhead line through the lanes; rebuild on `clip.changed`/`timeline.frames`/resize; scrub
+  via the existing ruler. Verified in Chrome: two sources (FOOD_3 magenta, BG_Room green) on two
+  tracks, a moved clip's bar shifts to its `startFrame`, playhead spans rows and aligns to the ruler.
+- **Next:** B2 drag clip body → `clip.update({startFrame})` + snapping; B3 edge-handle trim →
+  `clip.update({sourceIn/sourceOut})`; B4 select + delete + loop/timeScale popover; B5 add-clip +
+  vertical drag between tracks (with overlap prevention). Then Slice C (per-clip synced `<audio>`).
 
 ## Dev notes
 
