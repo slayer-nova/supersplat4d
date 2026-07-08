@@ -188,6 +188,18 @@ node re-registers by name (no duplicate default). `?loadscene=<url>` fetches + i
 Manifest: `{ version, type:'flexavatar-scene', fps, frames, sources:[{kind,name,url,transform}],
 clips:[{sourceName,trackIndex,startFrame,sourceIn,sourceOut,timeScale,loop}] }`.
 
+**Source-URL stability (review #6, option A):** three `kind`s each reference a STABLE served location
+so the scene reloads — `atlas` → the bake dir (`atlasBase`); `sog4d`/`splat` → a served file URL via
+`servedUrl()`. A same-origin http(s) URL is kept (made relative). A NON-reloadable source — `blob:`/
+`data:` (dropped file) or `local-asset-*` (the synthetic id the loader gives in-memory content, e.g. a
+`.sog4d`'s derived sub-splats) — falls back to the `./models/<name>` convention and is collected; on
+export the user is warned (console + popup) to place those files under `public/models/`. Import loads
+by kind (`atlas`→`loadAtlas`, else `assetLoader.load` dispatching on the filename ext) and dedupes
+`sog4d` by URL (one `.sog4d` recreates all its sub-splats). Result: served atlas/static/sog4d
+round-trip; locally-dropped objects round-trip once placed under `public/models/` (no more misleading
+"stable" URLs). LIMITATION: a `.sog4d` that auto-splits into sub-splats has no served per-part file, so
+its parts stay flagged unless the original `.sog4d` URL is recorded on them (a loader change, deferred).
+
 **Round-trip verified in Chrome:** exported a FOOD_3 scene (transform `[0.5,0.1,0]`, clip start 10 /
 in 5 / out 60 / loop), reloaded via `?loadscene=` on a fresh page → node, transform, and the exact
 clip all restored (`roundTripOK`), timeline length 65, single clip (no default duplicate). **Gotcha

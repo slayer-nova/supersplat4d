@@ -17,14 +17,25 @@ import { Scene } from './scene';
 const registerSceneManifest = (events: Events, scene: Scene) => {
     const buildManifest = () => {
         const splats = scene.getElementsByType(ElementType.splat) as any[];
+        const missingModels: string[] = [];
         const sources = splats.map((s) => {
             const p = s.entity.getLocalPosition();
             const r = s.entity.getLocalRotation();
             const sc = s.entity.getLocalScale();
+            // Three source kinds, each referencing a STABLE served location so the scene reloads:
+            //   atlas         -> the bake dir (atlasBase, e.g. ./bakes/<name>/)
+            //   sog4d/dynamic -> the served .sog4d URL
+            //   splat/static  -> the served .ply/.splat URL
+            // For sog4d + static we derive that URL from the loaded asset (servedUrl): a same-origin
+            // http(s) URL is kept (made relative); a locally-dropped file has no reloadable URL, so we
+            // fall back to the ./models/<name> convention and flag it (the user must place the file
+            // under public/models/ for the saved scene to restore it).
+            const kind = s.isAtlas ? 'atlas' : (s.isDynamic ? 'sog4d' : 'splat');
+            const url = s.isAtlas ? s.atlasBase : servedUrl(s, missingModels);
             return {
-                kind: s.isAtlas ? 'atlas' : 'splat',
+                kind,
                 name: s.name,
-                url: s.isAtlas ? s.atlasBase : (s.asset?.file?.url ?? s.filename ?? s.name),
+                url,
                 transform: {
                     position: [p.x, p.y, p.z],
                     rotation: [r.x, r.y, r.z, r.w],
@@ -32,7 +43,7 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
                 }
             };
         });
-        return {
+        const manifest = {
             version: 1,
             type: 'flexavatar-scene',
             fps: (events.invoke('timeline.frameRate') ?? 30) as number,
@@ -40,10 +51,29 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
             sources,
             clips: (events.invoke('docSerialize.clips') ?? []) as any[]
         };
+        return { manifest, missingModels };
+    };
+
+    // A reloadable, served URL for a non-atlas source, or the ./models/<name> convention if the file
+    // was dropped locally (no persistent URL) — those names are pushed to `missing` to warn on export.
+    const servedUrl = (s: any, missing: string[]): string => {
+        const raw: string = s.asset?.file?.url ?? '';
+        // Not reloadable: blob:/data: (dropped file) and `local-asset-*` (a synthetic id the loader
+        // assigns to in-memory content, e.g. a .sog4d's derived sub-splats — there's no served file).
+        if (raw && !/^(blob:|data:|local-asset)/i.test(raw)) {
+            try {
+                const u = new URL(raw, location.href);
+                return u.origin === location.origin ? `.${u.pathname}` : raw;
+            } catch (e) {
+                return raw;
+            }
+        }
+        missing.push(s.name);
+        return `./models/${s.name}`;
     };
 
     // Programmatic access (used by tests and the import round-trip).
-    events.function('flexScene.manifest', () => buildManifest());
+    events.function('flexScene.manifest', () => buildManifest().manifest);
 
     // --- in-app loader support (File > Load FlexAvatar…) ---
 
@@ -87,7 +117,8 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
 
     // Export: download the manifest as a .flexscene.json file.
     events.on('flexScene.export', () => {
-        const json = JSON.stringify(buildManifest(), null, 2);
+        const { manifest, missingModels } = buildManifest();
+        const json = JSON.stringify(manifest, null, 2);
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -97,6 +128,19 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        // Locally-dropped objects have no stable URL — tell the user to serve them from public/models/.
+        if (missingModels.length) {
+            const list = missingModels.join(', ');
+            console.warn(`flexScene: place under public/models/ to reload the saved scene: ${list}`);
+            if (events.functions.has('showPopup')) {
+                events.invoke('showPopup', {
+                    type: 'info',
+                    header: 'SCENE SAVED — ACTION NEEDED',
+                    message: `Saved. But ${missingModels.length} locally-loaded object(s) have no stable path. Put these files under public/models/ so the saved scene can reload them:\n\n${list}`
+                });
+            }
+        }
     });
 
     // Import: rebuild the scene from a manifest object. Seeds the clips first (they reattach as each
@@ -110,9 +154,18 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
         // this seeds the clips as `pending` so they reattach as each source re-registers by name.
         events.invoke('docDeserialize.clips', manifest.clips ?? []);
 
+        // A .sog4d loads once and recreates ALL its sub-splats, so dedupe sog4d sources by URL to
+        // avoid double-loading (static/atlas are NOT deduped — repeats are distinct instances).
+        const loadedSog4d = new Set<string>();
         for (const src of (manifest.sources ?? [])) {
+            if (src.kind === 'sog4d') {
+                if (loadedSog4d.has(src.url)) continue;
+                loadedSog4d.add(src.url);
+            }
             let splat: any;
             try {
+                // atlas -> a bake dir; sog4d/static -> a served file (assetLoader.load dispatches by
+                // the filename extension: .sog4d/.ply/.splat/.lcc).
                 splat = src.kind === 'atlas'
                     ? await scene.assetLoader.loadAtlas(src.url, 0, true)
                     : await scene.assetLoader.load({ url: src.url, filename: src.name });
