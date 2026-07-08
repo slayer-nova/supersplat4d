@@ -173,7 +173,7 @@ class Menu extends Container {
             text: 'FlexAvatar Scene...',
             icon: createSvg(sceneExport),
             isEnabled: () => !events.invoke('scene.empty'),
-            onSelect: () => events.invoke('flexScene.export')
+            onSelect: () => events.fire('flexScene.export')
         }]);
 
         const openRecentMenuPanel = new MenuPanel([]);

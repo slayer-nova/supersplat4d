@@ -126,6 +126,7 @@ class Splat extends Element {
     // with `visible` so the user's eye-toggle and clip-gating compose.
     clipSourceId: string | null = null;
     _clipVisible = true;
+    private _disposed = false; // set in destroy(); guards the deferred clip.registerSource
 
     // Slice C: the bake's audio track, played in sync with this node's active clip (currentTime =
     // source-local frame / fps, playbackRate = clip timeScale). One <audio> per source node; several
@@ -505,6 +506,7 @@ class Splat extends Element {
 
     destroy() {
         super.destroy();
+        this._disposed = true; // cancels a still-pending deferred registerSource (see add())
         // Drop this node's clip-store source (and its clips) so a removed node leaves no orphan
         // clips behind and the timeline length recomputes.
         if (this.clipSourceId) {
@@ -663,14 +665,16 @@ class Splat extends Element {
         // Slice C: keep the bake's audio in lockstep with the resolved frame.
         this.syncAudio(active, active ? frame : -1, timeScale);
 
-        // Hide the node when no clip covers the playhead (NLE convention). Compose with the user's
-        // visible toggle; only re-touch entity.enabled / force a render when the state flips.
+        // Hide the node when no clip covers the playhead (NLE convention). Force a render only when
+        // the clip-coverage flips, but apply entity.enabled EVERY tick — the atlas onUpdate branch
+        // returns before the dynamic path's per-frame apply, so this is the only place it runs, and
+        // it must pick up the user's eye-toggle (this.visible) even when _clipVisible doesn't change.
         if (this._clipVisible !== active) {
             this._clipVisible = active;
-            this.entity.enabled = this.visible && this._clipVisible;
             this.scene.forceRender = true;
             this.scene.app.renderNextFrame = true;
         }
+        this.entity.enabled = this.visible && this._clipVisible;
 
         if (active && frame !== this.atlasCurrentFrame) {
             this.atlasCurrentFrame = frame;
@@ -1035,6 +1039,7 @@ class Splat extends Element {
         // menu/UI gating), and show frame 0. onUpdate then drives per-frame swaps.
         if (this.isAtlas && this.atlasFrames) {
             setTimeout(() => {
+                if (this._disposed) return; // node was removed before this deferred tick ran
                 // Register as a clip-store source. The store creates a default full-range clip on
                 // import (behaviour-identical to the old per-node setDynamic) and owns the timeline
                 // length across ALL nodes, so multiple atlas nodes no longer clobber each other.

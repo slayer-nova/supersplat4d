@@ -562,10 +562,15 @@ class TimelinePanel extends Container {
                         selectClip(c.id);
                         return;
                     }
-                    const patch: any = { startFrame: newStart };
-                    if (targetTrack !== origTrack && !overlaps(targetTrack, newStart, len, c.id)) {
-                        patch.trackIndex = targetTrack;
-                    }
+                    // Accept a vertical move only if the target row is free at the new position;
+                    // then guard the horizontal position on the FINAL row too. If the new position
+                    // overlaps a clip on that row, keep the clip where it was. Always fire the update
+                    // (even a no-op) so rebuildTracks snaps the bar back from its dragged position.
+                    const vMove = targetTrack !== origTrack && !overlaps(targetTrack, newStart, len, c.id);
+                    const finalTrack = vMove ? targetTrack : origTrack;
+                    const finalStart = overlaps(finalTrack, newStart, len, c.id) ? origStart : newStart;
+                    const patch: any = { startFrame: finalStart };
+                    if (finalTrack !== origTrack) patch.trackIndex = finalTrack;
                     events.fire('clip.update', c.id, patch);
                     selectClip(c.id);
                 };
