@@ -292,6 +292,15 @@ const main = async () => {
     // scene (sources + transforms + multi-track clips + timeline) — the editor's save format.
     const scenePath = url.searchParams.get('loadscene');
 
+    // ?player=1 : read-only PLAYBACK mode for deployed/shared scenes — a `player-mode` root class
+    // hides the editing chrome (menu/panels/toolbars) via CSS, and the timeline autoplays once the
+    // scene has loaded (audio unlocks on the first click, per browser autoplay policy).
+    const playerMode = url.searchParams.get('player') === '1';
+    if (playerMode) {
+        document.body.classList.add('player-mode');
+        events.fire('miniStats.setVisible', false); // hide the perf HUD in the shared player
+    }
+
     const atlasList = url.searchParams.getAll('loadatlas');
     if (scenePath) {
         try {
@@ -350,6 +359,13 @@ const main = async () => {
         } catch (error) {
             console.warn('⚠️ Failed to auto-load demo data:', error);
         }
+    }
+
+    // Player mode: autoplay the timeline once the scene has loaded. The delay lets each atlas node's
+    // deferred clip.registerSource (setTimeout after scene.add) run so the timeline is in dynamic
+    // mode before play starts.
+    if (playerMode) {
+        setTimeout(() => events.fire('timeline.setPlaying', true), 400);
     }
 
 

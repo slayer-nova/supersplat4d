@@ -30,3 +30,9 @@ docs/
 
 # FlexAvatar atlas bakes — runtime test data (atlas.mp4 is tens of MB); see FLEXAVATAR_ATLAS.md
 public/bakes/
+
+# Packaged standalone scenes (scripts/package-scene.js output — bundle + copied bakes, 100s of MB)
+share/
+dist-share/
+# Local scratch scene manifests used to test packaging
+/test-scene.flexscene.json

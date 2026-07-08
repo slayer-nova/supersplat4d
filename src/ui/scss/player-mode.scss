@@ -1,0 +1,42 @@
+// Read-only PLAYBACK mode (?player=1) — toggled by the `player-mode` class on <body> (main.ts).
+// Hides all authoring chrome and leaves the 3D canvas + a minimal play/scrub timeline, for
+// deployed/shared scenes. Camera orbit still works (default controller); clips are non-interactive.
+
+body.player-mode {
+    // authoring panels / toolbars / labels
+    #menu,
+    #scene-panel,
+    #data-panel,        // splat-data panel
+    #sep-container,     // its resize separator
+    #bottom-toolbar,
+    #right-toolbar,
+    #mode-toggle,
+    #view-panel,
+    #color-panel,
+    #tools-container,
+    #app-label,
+    #cursor-label {
+        display: none !important;
+    }
+
+    // Timeline: keep the ruler/scrub + the play button only; hide editing affordances.
+    #timeline-panel {
+        #settings-controls {
+            display: none !important;   // fps / total-frames / smoothness inputs
+        }
+
+        // button row is prev(1) · play(2) · next(3) · addKey(4) · removeKey(5) — keep play only
+        #button-controls > .button:not(:nth-child(2)) {
+            display: none !important;
+        }
+
+        .tl-inspector,
+        .tl-resize {
+            display: none !important;
+        }
+
+        .tl-clip {
+            pointer-events: none;       // clips are read-only in playback (scrubbing the ruler still works)
+        }
+    }
+}

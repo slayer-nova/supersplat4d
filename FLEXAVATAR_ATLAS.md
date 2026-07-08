@@ -209,6 +209,54 @@ fixed:** `docDeserialize.clips` is a registered *function* — seed it with `eve
 (save/load).** The multi-track NLE editor is end-to-end: import → compose/trim/arrange → play (video
 + audio) → save → reload.
 
+## Standalone player + packaging (Option A) — deployable shares
+
+Turn a saved scene into a **self-contained static folder** you can host anywhere, opening read-only in
+a minimal playback UI. Two pieces:
+
+**1. Player mode (`?player=1`, `src/main.ts` + `src/ui/scss/player-mode.scss`).** Adds `player-mode`
+to `<body>` and hides all authoring chrome via CSS — `#menu`, scene/data panels, both toolbars,
+mode-toggle, view/color panels, tools, the app/cursor labels, and the MiniStats HUD
+(`events.fire('miniStats.setVisible', false)`). The timeline stays but is stripped to **play button +
+ruler/scrub + clip bars** (settings-controls, prev/next/add/remove-key buttons, the inspector, and the
+resize handle are hidden; `.tl-clip` is `pointer-events:none`). Camera **orbit still works** (default
+controller, not gated). After the load finishes, main.ts fires `timeline.setPlaying` (400 ms delay) so
+the scene **autoplays**. Verified in Chrome: chrome hidden, autoplay advancing, drag-orbit changes
+`scene.camera.azim`.
+
+**2. Progress bar during decode (`src/asset-loader.ts` + `src/loaders/atlas.ts`).** The animated atlas
+pre-decode is multi-second, so `loadAtlasAllFrames(base, onProgress)` reports a 0..1 fraction (0–0.9
+"Decoding frames" in pass-1, 0.9–1.0 "Compacting frames" in pass-2, yielding every 16 frames).
+`loadAtlas` drives the shared **Progress overlay** (`progressStart`/`progressUpdate`/`progressEnd`,
+progress in PERCENT) unless a caller passes its own `onProgress` (a multi-source scene import owns one
+unified bar). Verified: the 356-frame NewEra bake shows "Loading … / Decoding frames" + a filling bar.
+
+**3. Packaging script (`scripts/package-scene.js`, pure Node/CommonJS).**
+`node scripts/package-scene.js <scene.flexscene.json> [--out DIR] [--dist DIR] [--manifest-name NAME]
+[--keep-eruda]`. Given a built `dist/` + a manifest, it emits a folder = the JS/CSS bundle (copied by
+**exclusion** — everything except the asset dirs `bakes/models/scenes` and root model files, since
+chunk names are content-hashed) + the manifest + **only** the bakes/models the manifest references
+(atlas → dir, sog4d/splat → file; cross-origin http sources kept as absolute URLs, not bundled), with
+`index.html` rewritten to **auto-open in player mode** (a classic `<script>` after `<base>` does
+`history.replaceState` to `?loadscene=./<manifest>&player=1`) and eruda stripped. Serve the folder and
+the root URL redirects straight into the playing scene. Verified end-to-end: a FOOD_3 manifest packaged
+to 31 files / only `bakes/FOOD_3/`, served on a fresh port → auto-navigated to player mode, rendered,
+autoplayed, orbited. **Gotcha:** strip eruda BEFORE injecting the auto-nav `<script>`, and use a
+`</script>`-boundary-safe regex (`<script>(?:(?!</script>)[\s\S])*?eruda\.init\(\)…`) — otherwise the
+greedy eruda-init match swallows everything from the injected script up to `eruda.init()`, deleting the
+manifest/css/jszip links.
+
+**SOG static compression — DECISION PENDING.** The user wants static (non-4D) sources SOG-compressed at
+package time to shrink the folder. Atlas (mp4) and sog4d sources are already compressed; only a raw
+`.ply`/`.splat` **static** source is large. The fork owns `ply_to_sog4d.py` whose CLI
+(`python ply_to_sog4d.py --ply X.ply -o X.sog`) writes a static compressed `.sog` (SOG v2), and the
+editor **reads** `.sog` — but note `src/asset-loader.ts::load` has no `.sog` branch (the `.sog` reader
+lives in `file-handler.ts` isSog/importSog), so a manifest `splat` source rewritten to a `.sog` URL
+would NOT load through the scene-import path without a loader change. No scene currently has a static
+source to test against. Options: (A) packaging shells out to the conda `ply_to_sog4d.py` CLI (real
+`.sog`, couples the share script to Python + adds a loader `.sog` branch); (B) editor compresses static
+sources via SuperSplat's built-in `serializePlyCompressed` (compressed `.ply`, pure browser) on export.
+
 ## Decode speed (WebCodecs)
 
 `loaders/atlas.ts` `decodeVideoAllFrames` decodes every frame via **mediabunny (WebCodecs)** —

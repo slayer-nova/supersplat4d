@@ -367,13 +367,17 @@ type AtlasFrames = {
 //      deserialize to a GSplatData.
 // Memory note: pass-1 holds T*N*32 bytes transiently (71*58361*32 ≈ 132MB for FOOD_3); it is
 // released once pass 2 builds the compacted GSplatData set (T * K * ~60 bytes).
-const loadAtlasAllFrames = async (base: string): Promise<AtlasFrames> => {
+const loadAtlasAllFrames = async (
+    base: string,
+    onProgress?: (fraction: number, label?: string) => void
+): Promise<AtlasFrames> => {
     const meta = await loadAtlasMeta(base);
     const N = meta.n;
     const T = meta.T;
 
-    // Pass 1: full-N decode of every frame + union opacity keep-mask (read back from byte 27,
-    // which the decoder wrote as clamp(op*255)).
+    // Pass 1 (the slow part, ~90% of the time): full-N decode of every frame + union opacity
+    // keep-mask (read back from byte 27, which the decoder wrote as clamp(op*255)). The WebCodecs
+    // for-await yields between frames, so progress fired here repaints.
     const fullBufs: ArrayBuffer[] = new Array(T);
     const keepMask = new Uint8Array(N);
     const OP_MIN_BYTE = Math.round(OP_MIN * 255);
@@ -384,6 +388,7 @@ const loadAtlasAllFrames = async (base: string): Promise<AtlasFrames> => {
         for (let i = 0; i < N; i++) {
             if (uc[i * 32 + 27] >= OP_MIN_BYTE) keepMask[i] = 1;
         }
+        onProgress?.(0.9 * (f + 1) / T, 'Decoding frames');
     });
 
     // Build the compacted keep-index list (ascending — matches the decoder's emission order).
@@ -393,7 +398,8 @@ const loadAtlasAllFrames = async (base: string): Promise<AtlasFrames> => {
     }
     const K = keep.length;
 
-    // Pass 2: compact each frame to the fixed keep-set (pure byte copy, no re-decode).
+    // Pass 2: compact each frame to the fixed keep-set (pure byte copy, no re-decode). This loop is
+    // synchronous, so yield every 16 frames to let the progress bar repaint.
     const frames: GSplatData[] = new Array(T);
     for (let f = 0; f < T; f++) {
         const src = new Uint8Array(fullBufs[f]);
@@ -405,6 +411,8 @@ const loadAtlasAllFrames = async (base: string): Promise<AtlasFrames> => {
         }
         frames[f] = deserializeFromSSplat(comp);
         fullBufs[f] = null as unknown as ArrayBuffer; // release the 132MB pass-1 buffer set as we go
+        onProgress?.(0.9 + 0.1 * (f + 1) / T, 'Compacting frames');
+        if ((f & 15) === 0) await new Promise(r => setTimeout(r)); // yield so the bar paints
     }
 
     console.log(`🎞️ atlas: pre-decoded ${T} frames, ${K}/${N} splats kept (fixed index-stable set)`);

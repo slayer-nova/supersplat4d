@@ -112,29 +112,42 @@ class AssetLoader {
     // animate=false → a single static frame (frameIndex), the ?atlasframe=N path (unchanged).
     // animate=true  → pre-decode ALL T frames (fixed index-stable set) and return a Splat that
     //                 plays them on the timeline (frame 0 shown until timeline drives it).
-    async loadAtlas(base: string, frameIndex = 0, animate = false) {
-        this.events.fire('startSpinner');
-        try {
-            const wrap = (gsplatData: GSplatData) => {
-                const filename = `${base.replace(/\/+$/, '').split('/').pop() || 'atlas'}.splat`;
-                const asset = new Asset(filename, 'gsplat', {
-                    url: `atlas-${Date.now()}`,
-                    filename
-                });
-                this.app.assets.add(asset);
-                asset.resource = new GSplatResource(this.app.graphicsDevice, gsplatData);
-                return new Splat(asset, atlasOrientation);
-            };
+    // onProgress: when a caller (e.g. a multi-source scene import) wants to own a single unified
+    // progress bar, it passes onProgress(fraction 0..1, label) and we forward decode progress to it
+    // instead of driving our own overlay. When omitted, the animate path drives the shared Progress
+    // overlay itself (progressStart/Update/End) so every entry point gets a bar for free.
+    async loadAtlas(base: string, frameIndex = 0, animate = false, onProgress?: (fraction: number, label?: string) => void) {
+        const wrap = (gsplatData: GSplatData) => {
+            const filename = `${base.replace(/\/+$/, '').split('/').pop() || 'atlas'}.splat`;
+            const asset = new Asset(filename, 'gsplat', {
+                url: `atlas-${Date.now()}`,
+                filename
+            });
+            this.app.assets.add(asset);
+            asset.resource = new GSplatResource(this.app.graphicsDevice, gsplatData);
+            return new Splat(asset, atlasOrientation);
+        };
 
-            if (!animate) {
+        // Static single-frame path: quick, keep the spinner.
+        if (!animate) {
+            this.events.fire('startSpinner');
+            try {
                 const gsplatData: GSplatData = await loadAtlasFrame(base, frameIndex);
                 return wrap(gsplatData);
+            } finally {
+                this.events.fire('stopSpinner');
             }
+        }
 
-            // Animated: pre-decode every frame up front, wrap frame 0 into the node, and attach
-            // the frame set. Splat.add() flips the timeline to dynamic mode and onUpdate drives
-            // the per-frame in-place swap.
-            const { meta, frames, numSplats } = await loadAtlasAllFrames(base);
+        // Animated path: multi-second pre-decode → drive the progress-bar overlay.
+        const ownsOverlay = !onProgress;
+        const label = base.replace(/\/+$/, '').split('/').pop() || 'FlexAvatar';
+        if (ownsOverlay) this.events.fire('progressStart', `Loading ${label}…`);
+        try {
+            const { meta, frames, numSplats } = await loadAtlasAllFrames(base, (frac, lbl) => {
+                if (onProgress) onProgress(frac, lbl);
+                else this.events.fire('progressUpdate', { text: lbl ?? 'Loading…', progress: Math.round(frac * 100) });
+            });
             const splat = wrap(frames[0]);
             splat.isAtlas = true;
             splat.atlasFrames = frames;
@@ -147,7 +160,7 @@ class AssetLoader {
             console.log(`🎬 atlas node ready: ${numSplats} splats × ${frames.length} frames @ ${meta.fps}fps`);
             return splat;
         } finally {
-            this.events.fire('stopSpinner');
+            if (ownsOverlay) this.events.fire('progressEnd');
         }
     }
 }
