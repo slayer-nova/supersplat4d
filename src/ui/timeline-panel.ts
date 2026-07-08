@@ -375,7 +375,12 @@ class TimelinePanel extends Container {
             return `hsl(${h % 360}, 42%, 42%)`;
         };
         const shortName = (name: string) => name.replace(/\.(splat|sog4d|ply|lcc)$/i, '');
-        const clipLen = (c: any) => Math.max(1, Math.ceil((c.sourceOut - c.sourceIn) / Math.max(1e-6, c.timeScale)));
+        const tlFps = () => (events.invoke('timeline.frameRate') ?? 30) as number;
+        // Per-bake fps: a clip's timeline width = (sourceFrames × timelineFps) / (sourceFps × timeScale)
+        // — matches the clip store's math so bars align with playback (a 15fps clip is 2× wide at 30fps).
+        const spanLen = (sourceIn: number, sourceOut: number, timeScale: number, sourceFps: number) =>
+            Math.max(1, Math.ceil((sourceOut - sourceIn) * tlFps() / (Math.max(1, sourceFps) * Math.max(1e-6, timeScale))));
+        const clipLen = (c: any) => spanLen(c.sourceIn, c.sourceOut, c.timeScale, c.sourceFps ?? 30);
 
         // ruler row: gutter spacer + the existing Ticks ruler (moved into a lane-wrap)
         const rulerRow = document.createElement('div');
@@ -580,6 +585,8 @@ class TimelinePanel extends Container {
                 const startX = e.clientX;
                 const fpp = framesPerPx();
                 const ts = Math.max(1e-6, c.timeScale);
+                const sourceFps = Math.max(1, c.sourceFps ?? 30);
+                const k = ts * sourceFps / tlFps(); // source frames advanced per timeline frame
                 const origStart = c.startFrame;
                 const origIn = c.sourceIn;
                 const origOut = c.sourceOut;
@@ -588,7 +595,7 @@ class TimelinePanel extends Container {
                 bar.classList.add('dragging');
 
                 const applyVisual = (start: number, inn: number, out: number) => {
-                    const len = Math.max(1, Math.ceil((out - inn) / ts));
+                    const len = spanLen(inn, out, ts, sourceFps);
                     bar.style.left = `${xOfFrame(start)}px`;
                     bar.style.width = `${Math.max(6, xOfFrame(start + len) - xOfFrame(start))}px`;
                 };
@@ -596,12 +603,12 @@ class TimelinePanel extends Container {
                 const onMove = (ev: PointerEvent) => {
                     const dTl = Math.round((ev.clientX - startX) * fpp);
                     if (side === 'l') {
-                        const inn = Math.min(Math.max(0, Math.round(origIn + dTl * ts)), origOut - 1);
-                        const start = Math.max(0, origStart + Math.round((inn - origIn) / ts));
+                        const inn = Math.min(Math.max(0, Math.round(origIn + dTl * k)), origOut - 1);
+                        const start = Math.max(0, origStart + Math.round((inn - origIn) / k));
                         patch = { startFrame: start, sourceIn: inn };
                         applyVisual(start, inn, origOut);
                     } else {
-                        const out = Math.max(origIn + 1, Math.round(origOut + dTl * ts));
+                        const out = Math.max(origIn + 1, Math.round(origOut + dTl * k));
                         patch = { sourceOut: out };
                         applyVisual(origStart, origIn, out);
                     }

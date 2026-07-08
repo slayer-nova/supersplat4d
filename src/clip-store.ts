@@ -33,10 +33,15 @@ const registerClipStore = (events: Events) => {
     let seq = 1;
     const genId = (p: string) => `${p}${seq++}`;
 
-    // Timeline-frame length of a clip's placed span.
-    const clipLen = (c: Clip) => Math.max(1, Math.ceil((c.sourceOut - c.sourceIn) / Math.max(1e-6, c.timeScale)));
-
     const timelineFps = () => (events.invoke('timeline.frameRate') ?? 30) as number;
+
+    // Per-bake fps: a source is `fps` fps; placed on a `timelineFps` timeline at `timeScale` speed it
+    // occupies (sourceFrames × timelineFps) / (fps × timeScale) TIMELINE frames — so a 15fps clip on a
+    // 30fps timeline is twice as wide and plays at real speed. (fps == timelineFps reduces to the old
+    // 1:1 mapping, so 30fps bakes are unchanged.)
+    const tlLen = (sourceIn: number, sourceOut: number, timeScale: number, fps: number) =>
+        Math.max(1, Math.ceil((sourceOut - sourceIn) * timelineFps() / (Math.max(1, fps) * Math.max(1e-6, timeScale))));
+    const clipLen = (c: Clip) => tlLen(c.sourceIn, c.sourceOut, c.timeScale, sources.get(c.sourceId)?.fps ?? 30);
 
     // The lowest track row on which [start, start+len) does not overlap an existing clip.
     const freeTrackFor = (start: number, len: number, ignoreId?: string) => {
@@ -82,7 +87,7 @@ const registerClipStore = (events: Events) => {
             clips.push({
                 id: genId('clip'), sourceId: id, sourceName: name,
                 startFrame: 0, sourceIn: 0, sourceOut: len, timeScale: 1, loop: false,
-                trackIndex: freeTrackFor(0, len)
+                trackIndex: freeTrackFor(0, tlLen(0, len, 1, fps))
             });
         }
         syncTimeline();
@@ -135,13 +140,17 @@ const registerClipStore = (events: Events) => {
             id: genId('clip'), sourceId, sourceName: src.name,
             startFrame: start, sourceIn: sIn, sourceOut: sOut,
             timeScale: opts.timeScale ?? 1, loop: opts.loop ?? false,
-            trackIndex: opts.trackIndex ?? freeTrackFor(start, Math.max(1, Math.ceil((sOut - sIn) / Math.max(1e-6, opts.timeScale ?? 1))))
+            trackIndex: opts.trackIndex ?? freeTrackFor(start, tlLen(sIn, sOut, opts.timeScale ?? 1, src.fps))
         };
         clips.push(clip);
         syncTimeline();
     });
 
-    events.function('clip.list', () => clips.map(c => ({ ...c })));
+    // Each clip carries its source's fps so the UI can size/trim bars with the same per-bake math.
+    events.function('clip.list', () => clips.map(c => ({ ...c, sourceFps: sources.get(c.sourceId)?.fps ?? 30 })));
+
+    // Clip timeline-lengths depend on the timeline fps, so re-sync (and rebuild) if it changes.
+    events.on('timeline.frameRate', () => syncTimeline());
 
     // --- the resolver: global timeline frame -> this source's frame (if any) -
 
@@ -162,7 +171,9 @@ const registerClipStore = (events: Events) => {
         if (!best) return { active: false, localFrame: -1, timeScale: 1 };
         const prog = globalFrame - best.startFrame;                 // timeline frames into the clip
         const span = Math.max(1, best.sourceOut - best.sourceIn);
-        let off = Math.floor(prog * best.timeScale);                // source frames advanced
+        const fps = sources.get(best.sourceId)?.fps ?? 30;
+        // source frames advanced = timeline frames × (sourceFps × timeScale / timelineFps)
+        let off = Math.floor(prog * best.timeScale * fps / timelineFps());
         off = best.loop ? ((off % span) + span) % span : Math.min(Math.max(0, off), span - 1);
         return { active: true, localFrame: best.sourceIn + off, timeScale: best.timeScale };
     });

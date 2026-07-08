@@ -149,6 +149,17 @@ a fixed 92px gutter, so clip bars align to the ruler by construction (`xOfFrame`
 
 **Slice B COMPLETE (B1–B5 + resize/scroll polish).**
 
+### Per-bake fps (DONE, verified)
+
+Clips play at their **own bake's frame rate** regardless of the timeline fps, so 15fps and 30fps bakes
+mix correctly. A source is `fps` fps; on a `timelineFps` timeline at `timeScale` speed it occupies
+`(sourceFrames × timelineFps) / (fps × timeScale)` TIMELINE frames, and `clip.resolve` advances the
+source frame by `timelineFrames × fps × timeScale / timelineFps`. `clip.list` now includes each clip's
+`sourceFps`; the timeline UI uses the same math for bar width and trim (source-frame ↔ pixel). The
+store re-syncs on `timeline.frameRate` change. `fps == timelineFps` reduces to the old 1:1 mapping, so
+30fps bakes are unchanged. Verified: a 15fps 30-frame source is 60 timeline frames wide and advances
+at half the timeline rate (tl 10→src 5, 30→15, 58→29); a 30fps source is unchanged (tl 10→src 10).
+
 ### Slice C — per-clip timeline-synced audio (DONE, verified)
 
 Each 4D atlas node plays the bake's `audio.m4a` in sync with its clip. One `<audio>` per source node
