@@ -197,6 +197,17 @@ fixed:** `docDeserialize.clips` is a registered *function* — seed it with `eve
 (save/load).** The multi-track NLE editor is end-to-end: import → compose/trim/arrange → play (video
 + audio) → save → reload.
 
+## Decode speed (WebCodecs)
+
+`loaders/atlas.ts` `decodeVideoAllFrames` decodes every frame via **mediabunny (WebCodecs)** —
+`fetch → Blob → Input(BlobSource) → CanvasSink.canvases()` streams each frame in order at hardware
+speed, no per-`<video>`-seek latency. Measured: a 160-frame tiktok bake load went **~30–40s → 7.6s**;
+frames are pixel-identical to the old path (avatar decodes correctly). Gotchas: use `BlobSource`
+(download once) not `UrlSource` — the latter's HTTP range requests get aborted by the dev `serve` and
+hang; and don't pass both `width`+`height` to `CanvasSink` without `fit` (it throws) — omit them to
+get native resolution (== atlas size). Falls back to the original `<video>`-seek path
+(`decodeVideoAllFramesSeek`) if WebCodecs/demux is unavailable or yields the wrong frame count.
+
 ## Dev notes
 
 - **`public/bakes/` is gitignored** (the atlas mp4 is tens of MB — runtime test data, not source).

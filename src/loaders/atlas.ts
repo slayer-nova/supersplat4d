@@ -1,3 +1,4 @@
+import { ALL_FORMATS, BlobSource, CanvasSink, Input } from 'mediabunny';
 import { GSplatData } from 'playcanvas';
 
 import { deserializeFromSSplat } from './splat';
@@ -235,12 +236,58 @@ const loadAtlasFrame = async (base: string, frameIndex = 0): Promise<GSplatData>
     return deserializeFromSSplat(buf);
 };
 
-// Load the atlas.mp4 ONCE and walk it frame-by-frame, invoking `onFrame(f, imgData)` for
-// each of meta.T frames in order. Sequential seeking on a single <video> is far cheaper
-// than the per-frame element+load in decodeVideoFrame (which is fine for one frame but
-// would re-download/decode the whole clip T times). Same-origin required (getImageData
-// taints a cross-origin canvas).
-const decodeVideoAllFrames = (
+// FAST path: decode every frame via WebCodecs (mediabunny), streaming onFrame in presentation
+// order. The atlas is all-intra (keyint=1), so the decoder runs at hardware speed with no per-frame
+// <video> seek latency — cutting a 160-frame tiktok bake from ~30-40s (≈200-400ms/seek) to a few
+// seconds. Falls back to the <video>-seek path if WebCodecs/demux isn't available or yields the
+// wrong frame count. Same-origin required (getImageData taints a cross-origin canvas).
+const decodeVideoAllFrames = async (
+    meta: AtlasMeta,
+    videoUrl: string,
+    onFrame: (frameIndex: number, imgData: ImageData) => void
+): Promise<void> => {
+    const { ATLAS_W, ATLAS_H } = atlasDims(meta);
+    try {
+        // Download the whole mp4 once and decode from memory (BlobSource). UrlSource issues HTTP
+        // range requests which the dev `serve` aborts (AbortError → hang); a Blob avoids that.
+        const resp = await fetch(videoUrl);
+        if (!resp.ok) throw new Error(`atlas: fetch ${resp.status} ${videoUrl}`);
+        const blob = await resp.blob();
+        const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+        const videoTrack = await input.getPrimaryVideoTrack();
+        if (!videoTrack) throw new Error('no video track');
+
+        // No width/height → the sink outputs at the video's native resolution (== the atlas size);
+        // we drawImage into an ATLAS_W×ATLAS_H read canvas below (1:1, no scaling). Specifying both
+        // width and height would require a `fit` option.
+        const sink = new CanvasSink(videoTrack);
+        const readCanvas = document.createElement('canvas');
+        readCanvas.width = ATLAS_W;
+        readCanvas.height = ATLAS_H;
+        const readCtx = readCanvas.getContext('2d', { willReadFrequently: true })!;
+
+        let frame = 0;
+        for await (const wrapped of sink.canvases()) {
+            if (frame >= meta.T) break;
+            readCtx.drawImage(wrapped.canvas as CanvasImageSource, 0, 0, ATLAS_W, ATLAS_H);
+            onFrame(frame, readCtx.getImageData(0, 0, ATLAS_W, ATLAS_H));
+            frame++;
+        }
+        (input as unknown as { dispose?: () => void }).dispose?.();
+
+        if (frame >= meta.T) return; // fast path decoded all frames
+        console.warn(`atlas: WebCodecs yielded ${frame}/${meta.T} frames — falling back to seek`);
+    } catch (err) {
+        console.warn('atlas: WebCodecs decode unavailable, falling back to <video> seek:', err);
+    }
+    // Fallback re-decodes from scratch; onFrame overwrites by index and the keep-mask OR is
+    // idempotent, so any partial fast-path output is harmless.
+    return decodeVideoAllFramesSeek(meta, videoUrl, onFrame);
+};
+
+// Fallback: load the atlas.mp4 ONCE and walk it frame-by-frame by sequential <video> seeking,
+// invoking `onFrame(f, imgData)` for each of meta.T frames in order.
+const decodeVideoAllFramesSeek = (
     meta: AtlasMeta,
     videoUrl: string,
     onFrame: (frameIndex: number, imgData: ImageData) => void
