@@ -190,6 +190,10 @@ class Menu extends Container {
                 await events.invoke('doc.open');
             }
         }, {
+            text: 'Load FlexAvatar...',
+            icon: createSvg(sceneImport),
+            onSelect: () => events.fire('flexAvatar.showLoader')
+        }, {
             text: localize('menu.file.open-recent'),
             icon: createSvg(sceneOpen),
             subMenu: openRecentMenuPanel,

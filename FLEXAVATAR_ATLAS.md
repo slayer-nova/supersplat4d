@@ -4,6 +4,16 @@ This fork loads **FlexAvatar attribute-atlas bakes** (a driven FLEX talking-head
 encoded as an mp4 attribute atlas + `meta.json`) as a first-class 3D-Gaussian-Splat node that
 transforms and plays on the shared timeline, alongside the fork's native static/`.sog4d` nodes.
 
+## Loading avatars
+
+- **In-app:** **File ▸ Load FlexAvatar…** opens a dialog (`src/ui/flexavatar-loader.ts`) that lists the
+  bake folders under `/bakes` and adds the chosen one to the CURRENT scene (no reload), so a
+  composition is built up interactively. Discovery = `flexAvatar.listBakes` (the dev `serve` returns a
+  JSON dir listing for `Accept: application/json`; falls back to an optional `bakes/index.json`); load
+  = `flexAvatar.load(base)` (= `assetLoader.loadAtlas` + `scene.add`, same as the URL path). A manual
+  path field covers bakes served elsewhere. Registered in `scene-manifest.ts` + `editor.ts` + `menu.ts`.
+- **URL args** (below) still work for direct/deep links.
+
 ## Entry points (URL args, `src/main.ts`)
 
 - `?loadatlas=./bakes/<name>/` — load the bake as an **animated** node (pre-decode all frames,

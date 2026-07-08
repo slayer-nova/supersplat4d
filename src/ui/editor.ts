@@ -7,6 +7,7 @@ import { isMobileDevice } from '../utils/device-detection';
 import { BottomToolbar } from './bottom-toolbar';
 import { ColorPanel } from './color-panel';
 import { DynamicParamsDialog } from './dynamic-params-dialog';
+import { FlexAvatarLoaderDialog } from './flexavatar-loader';
 import { DynamicExportDialog } from './dynamic-export-dialog';
 import { ExportPopup } from './export-popup';
 import { ImageSettingsDialog } from './image-settings-dialog';
@@ -234,6 +235,10 @@ class EditorUI {
         // dynamic export dialog
         const dynamicExportDialog = new DynamicExportDialog(events);
 
+        // FlexAvatar in-app loader
+        const flexAvatarLoader = new FlexAvatarLoaderDialog(events);
+        events.on('flexAvatar.showLoader', () => flexAvatarLoader.show());
+
         topContainer.append(popup);
         topContainer.append(exportPopup);
         topContainer.append(publishSettingsDialog);
@@ -241,6 +246,7 @@ class EditorUI {
         topContainer.append(videoSettingsDialog);
         topContainer.append(dynamicParamsDialog);
         topContainer.append(dynamicExportDialog);
+        topContainer.append(flexAvatarLoader);
 
         appContainer.append(editorContainer);
         appContainer.append(topContainer);

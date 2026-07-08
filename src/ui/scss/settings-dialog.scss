@@ -117,3 +117,41 @@
         }
     }
 }
+
+// FlexAvatar in-app loader (reuses .settings-dialog for the overlay/dialog shell)
+#flexavatar-loader {
+    #flexload-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 240px;
+        overflow-y: auto;
+        margin: 8px 0;
+
+        .flexload-item {
+            text-align: left;
+            padding: 8px 10px;
+            background-color: $bcg-darkest;
+            border: 1px solid $bcg-light;
+            border-radius: 4px;
+            color: $clr-active;
+            font-size: 13px;
+            cursor: pointer;
+
+            &:hover {
+                border-color: $clr-hilight;
+                background-color: $bcg-dark;
+            }
+        }
+
+        .flexload-note {
+            color: $clr-disabled;
+            font-size: 12px;
+            padding: 8px 2px;
+        }
+    }
+
+    .flexload-path {
+        flex: 1 1 0;
+    }
+}

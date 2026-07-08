@@ -45,6 +45,46 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
     // Programmatic access (used by tests and the import round-trip).
     events.function('flexScene.manifest', () => buildManifest());
 
+    // --- in-app loader support (File > Load FlexAvatar…) ---
+
+    // Discover bake folders under /bakes. The dev server (`serve`) returns a JSON directory listing
+    // for Accept: application/json; fall back to an optional bakes/index.json (a plain name array).
+    events.function('flexAvatar.listBakes', async () => {
+        try {
+            const r = await fetch('./bakes/', { headers: { Accept: 'application/json' } });
+            if (r.ok) {
+                const j = await r.json();
+                const names = (j.files ?? [])
+                    .filter((f: any) => f.type === 'folder')
+                    .map((f: any) => (f.name || '').replace(/\/+$/, ''))
+                    .filter(Boolean);
+                if (names.length) return names;
+            }
+        } catch (e) { /* not a listing-capable server */ }
+        try {
+            const r = await fetch('./bakes/index.json');
+            if (r.ok) {
+                const j = await r.json();
+                if (Array.isArray(j)) return j;
+            }
+        } catch (e) { /* no index */ }
+        return [];
+    });
+
+    // Load a bake into the CURRENT scene (no reload) — same path as ?loadatlas, at runtime.
+    events.function('flexAvatar.load', async (base: string) => {
+        try {
+            const splat = await scene.assetLoader.loadAtlas(base, 0, true);
+            scene.add(splat);
+            events.fire('selection', splat);
+            events.fire('camera.focus');
+            return splat;
+        } catch (e) {
+            console.error('flexAvatar.load failed:', base, e);
+            return null;
+        }
+    });
+
     // Export: download the manifest as a .flexscene.json file.
     events.on('flexScene.export', () => {
         const json = JSON.stringify(buildManifest(), null, 2);
