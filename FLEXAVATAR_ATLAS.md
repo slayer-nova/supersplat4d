@@ -137,7 +137,23 @@ a fixed 92px gutter, so clip bars align to the ruler by construction (`xOfFrame`
   the ruler kept fixed. Verified: 6 track rows scroll at the default 96px height; dragging the handle
   up grew the track area to 236px showing all rows.
 
-**Slice B COMPLETE (B1–B5 + resize/scroll polish).** Next: Slice C (per-clip timeline-synced `<audio>`).
+**Slice B COMPLETE (B1–B5 + resize/scroll polish).**
+
+### Slice C — per-clip timeline-synced audio (DONE, verified)
+
+Each 4D atlas node plays the bake's `audio.m4a` in sync with its clip. One `<audio>` per source node
+(several active nodes mix). `meta.audio` → `splat.audioUrl` (asset-loader), element created in
+`Splat.add()`, cleaned up in `destroy()`. `Splat.syncAudio()` (called each frame from
+`updateAtlasPlayback`) drives it off the resolved clip: `currentTime = sourceLocalFrame / fps`,
+`playbackRate = clip.timeScale` (so `clip.resolve` now also returns `timeScale`); it only re-seeks
+when drift exceeds ~80ms (avoids constant-seek stutter), pauses when the timeline is paused or the
+node is off its clip, and follows scrubbing. Autoplay unlocks via the play-button gesture (browser
+sticky activation). Verified in Chrome: FOOD_3 audio duration 2.37s (= 71f/30fps); during play it
+tracks the frame (~40–57ms startup-latency drift); pause → audio pauses; scrub to frame 15 → audio
+`currentTime` 0.5 exactly. Known-minor: ~50ms play-start latency (tunable via the drift threshold);
+scrubbed/paused sync is exact.
+
+**Tier 2 (editor timeline) feature-complete: Slice A + Slice B (B1–B5 + polish) + Slice C.**
 
 ## Dev notes
 

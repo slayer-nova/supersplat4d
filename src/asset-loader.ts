@@ -140,6 +140,8 @@ class AssetLoader {
             splat.atlasFrames = frames;
             splat.atlasFps = meta.fps;
             splat.atlasFrameCount = frames.length;
+            // Slice C: the bake's audio track (same-origin), played in sync with this node's clip.
+            splat.audioUrl = meta.audio ? `${base}${meta.audio}` : null;
             console.log(`🎬 atlas node ready: ${numSplats} splats × ${frames.length} frames @ ${meta.fps}fps`);
             return splat;
         } finally {

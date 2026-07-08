@@ -127,6 +127,12 @@ class Splat extends Element {
     clipSourceId: string | null = null;
     _clipVisible = true;
 
+    // Slice C: the bake's audio track, played in sync with this node's active clip (currentTime =
+    // source-local frame / fps, playbackRate = clip timeScale). One <audio> per source node; several
+    // active nodes mix. Autoplay unlocks on the timeline play button (a user gesture).
+    audioUrl: string | null = null;
+    private audioEl: HTMLAudioElement | null = null;
+
     // Segment management
     segmentCache = new Map<number, Uint32Array>();
     loadingSegments = new Set<number>();
@@ -501,6 +507,11 @@ class Splat extends Element {
             this.scene.events.fire('clip.unregisterSource', this.clipSourceId);
             this.clipSourceId = null;
         }
+        if (this.audioEl) {
+            this.audioEl.pause();
+            this.audioEl.src = '';
+            this.audioEl = null;
+        }
         this.entity.destroy();
         this.asset.registry.remove(this.asset);
         this.asset.unload();
@@ -634,14 +645,19 @@ class Splat extends Element {
         // wrap so frame 0 still shows immediately.
         let active = true;
         let frame: number;
+        let timeScale = 1;
         if (this.clipSourceId) {
             const r = this.scene.events.invoke('clip.resolve', this.clipSourceId, globalFrame) as
-                { active: boolean, localFrame: number };
+                { active: boolean, localFrame: number, timeScale: number };
             active = r.active;
+            timeScale = r.timeScale;
             frame = active ? r.localFrame : this.atlasCurrentFrame;
         } else {
             frame = ((globalFrame % this.atlasFrameCount) + this.atlasFrameCount) % this.atlasFrameCount;
         }
+
+        // Slice C: keep the bake's audio in lockstep with the resolved frame.
+        this.syncAudio(active, active ? frame : -1, timeScale);
 
         // Hide the node when no clip covers the playhead (NLE convention). Compose with the user's
         // visible toggle; only re-touch entity.enabled / force a render when the state flips.
@@ -655,6 +671,35 @@ class Splat extends Element {
         if (active && frame !== this.atlasCurrentFrame) {
             this.atlasCurrentFrame = frame;
             this.applyAtlasFrame(frame);
+        }
+    }
+
+    // Slice C: sync this node's audio to the resolved clip. currentTime tracks the source-local
+    // frame (seconds = frame / fps); playbackRate follows the clip's timeScale so audio advances at
+    // the same rate the frames do. Only re-seek when drift exceeds a threshold (avoids constant
+    // seeking → stutter). Paused/scrubbed or inactive (off its clip) → the audio is paused.
+    private syncAudio(active: boolean, localFrame: number, timeScale: number) {
+        const a = this.audioEl;
+        if (!a) return;
+        if (!active) {
+            if (!a.paused) a.pause();
+            return;
+        }
+        const expected = localFrame / this.atlasFps;
+        const playing = !!this.scene.events.invoke('timeline.playing');
+        if (!playing) {
+            if (!a.paused) a.pause();
+            if (Math.abs(a.currentTime - expected) > 0.05) {
+                try { a.currentTime = expected; } catch { /* not seekable yet */ }
+            }
+            return;
+        }
+        a.playbackRate = Math.max(0.0625, Math.min(16, timeScale));
+        if (a.paused) {
+            try { a.currentTime = expected; } catch { /* not seekable yet */ }
+            a.play().catch(() => { /* blocked until a user gesture (the play button provides one) */ });
+        } else if (Math.abs(a.currentTime - expected) > 0.08) {
+            try { a.currentTime = expected; } catch { /* not seekable yet */ }
         }
     }
 
@@ -998,6 +1043,12 @@ class Splat extends Element {
             }, 0);
             this.applyAtlasFrame(0);
             this.atlasCurrentFrame = 0;
+
+            // Slice C: prepare the bake's audio track (played/seeked in updateAtlasPlayback).
+            if (this.audioUrl) {
+                this.audioEl = new Audio(this.audioUrl);
+                this.audioEl.preload = 'auto';
+            }
         }
 
         // Initialize dynamic gaussian: load first segment and set initial time

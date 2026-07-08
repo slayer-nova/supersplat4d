@@ -23,7 +23,7 @@ type Clip = {
 
 type Source = { id: string; name: string; frameCount: number; fps: number };
 
-type Resolved = { active: boolean; localFrame: number };
+type Resolved = { active: boolean; localFrame: number; timeScale: number };
 
 const registerClipStore = (events: Events) => {
     const sources = new Map<string, Source>();
@@ -159,12 +159,12 @@ const registerClipStore = (events: Events) => {
                 : (globalFrame >= c.startFrame && globalFrame < end);
             if (within && (!best || c.trackIndex < best.trackIndex)) best = c;
         }
-        if (!best) return { active: false, localFrame: -1 };
+        if (!best) return { active: false, localFrame: -1, timeScale: 1 };
         const prog = globalFrame - best.startFrame;                 // timeline frames into the clip
         const span = Math.max(1, best.sourceOut - best.sourceIn);
         let off = Math.floor(prog * best.timeScale);                // source frames advanced
         off = best.loop ? ((off % span) + span) % span : Math.min(Math.max(0, off), span - 1);
-        return { active: true, localFrame: best.sourceIn + off };
+        return { active: true, localFrame: best.sourceIn + off, timeScale: best.timeScale };
     });
 
     // --- doc persistence -----------------------------------------------------
