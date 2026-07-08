@@ -18,6 +18,7 @@ import { registerSelectionEvents } from './selection';
 import { Shortcuts } from './shortcuts';
 import { registerTimelineEvents } from './timeline';
 import { registerClipStore } from './clip-store';
+import { registerSceneManifest } from './scene-manifest';
 import { BoxSelection } from './tools/box-selection';
 import { BrushSelection } from './tools/brush-selection';
 import { EyedropperSelection } from './tools/eyedropper-selection';
@@ -259,6 +260,7 @@ const main = async () => {
     registerSelectionEvents(events, scene);
     registerTimelineEvents(events);
     registerClipStore(events);
+    registerSceneManifest(events, scene);
     registerCameraPosesEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);
@@ -286,8 +288,20 @@ const main = async () => {
     // the bake's atlas.mp4 and adds a Splat node that PLAYS them on the shared timeline (press
     // play, or scrub) — upright, orbit-able, transformable, a normal Scene Manager entry.
     // Optional &atlasframe=N pins a single static frame instead (no animation).
+    // FlexAvatar scene manifest: ?loadscene=./scenes/foo.flexscene.json rebuilds a whole composed
+    // scene (sources + transforms + multi-track clips + timeline) — the editor's save format.
+    const scenePath = url.searchParams.get('loadscene');
+
     const atlasList = url.searchParams.getAll('loadatlas');
-    if (atlasList.length > 0) {
+    if (scenePath) {
+        try {
+            const manifest = await fetch(decodeURIComponent(scenePath)).then(r => r.json());
+            await events.invoke('flexScene.import', manifest);
+            console.log('✅ Loaded FlexAvatar scene:', scenePath);
+        } catch (error) {
+            console.error(`⚠️ Failed to load scene ${scenePath}:`, error);
+        }
+    } else if (atlasList.length > 0) {
         const frameParam = url.searchParams.get('atlasframe');
         const animate = frameParam === null;                 // no explicit frame → animate
         const frameIndex = frameParam ? parseInt(frameParam, 10) : 0;

@@ -142,6 +142,8 @@ class AssetLoader {
             splat.atlasFrameCount = frames.length;
             // Slice C: the bake's audio track (same-origin), played in sync with this node's clip.
             splat.audioUrl = meta.audio ? `${base}${meta.audio}` : null;
+            // Slice T3: remember the bake URL so the scene manifest can reload this 4D source.
+            splat.atlasBase = base;
             console.log(`🎬 atlas node ready: ${numSplats} splats × ${frames.length} frames @ ${meta.fps}fps`);
             return splat;
         } finally {

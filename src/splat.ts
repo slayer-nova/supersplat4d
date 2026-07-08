@@ -133,6 +133,10 @@ class Splat extends Element {
     audioUrl: string | null = null;
     private audioEl: HTMLAudioElement | null = null;
 
+    // Slice T3: the bake directory URL this atlas node was loaded from — written to the scene
+    // manifest so an exported composition can reload the same 4D source.
+    atlasBase: string | null = null;
+
     // Segment management
     segmentCache = new Map<number, Uint32Array>();
     loadingSegments = new Set<number>();

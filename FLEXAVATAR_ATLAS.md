@@ -153,7 +153,28 @@ tracks the frame (~40–57ms startup-latency drift); pause → audio pauses; scr
 `currentTime` 0.5 exactly. Known-minor: ~50ms play-start latency (tunable via the drift threshold);
 scrubbed/paused sync is exact.
 
-**Tier 2 (editor timeline) feature-complete: Slice A + Slice B (B1–B5 + polish) + Slice C.**
+### Slice T3 — scene-manifest export/import (DONE, verified)
+
+The editor's **save format**. `src/scene-manifest.ts` (`registerSceneManifest(events, scene)`) builds
+a compact JSON — every gaussian object (static `.ply`/`.splat` or a 4D atlas bake) with its transform,
+plus all multi-track clips and the timeline fps/frames — and reloads it. Heavy media stays external
+(atlas nodes carry their bake `url`; a new `splat.atlasBase` records it). Events: `flexScene.manifest`
+(build the object), `flexScene.export` (download `.flexscene.json`; also a **File ▸ Export ▸ FlexAvatar
+Scene…** menu item), `flexScene.import(manifest)` (rebuild). Import order: `invoke`
+`docDeserialize.clips` to seed the clips as `pending`, then load each source — clips reattach as each
+node re-registers by name (no duplicate default). `?loadscene=<url>` fetches + imports on startup.
+
+Manifest: `{ version, type:'flexavatar-scene', fps, frames, sources:[{kind,name,url,transform}],
+clips:[{sourceName,trackIndex,startFrame,sourceIn,sourceOut,timeScale,loop}] }`.
+
+**Round-trip verified in Chrome:** exported a FOOD_3 scene (transform `[0.5,0.1,0]`, clip start 10 /
+in 5 / out 60 / loop), reloaded via `?loadscene=` on a fresh page → node, transform, and the exact
+clip all restored (`roundTripOK`), timeline length 65, single clip (no default duplicate). **Gotcha
+fixed:** `docDeserialize.clips` is a registered *function* — seed it with `events.invoke`, not `fire`.
+
+**Tier 2 editor COMPLETE: Slice A (data model) + Slice B (B1–B5 + polish) + Slice C (audio) + T3
+(save/load).** The multi-track NLE editor is end-to-end: import → compose/trim/arrange → play (video
++ audio) → save → reload.
 
 ## Dev notes
 
