@@ -19,6 +19,7 @@ import { Shortcuts } from './shortcuts';
 import { registerTimelineEvents } from './timeline';
 import { registerClipStore } from './clip-store';
 import { registerSceneManifest } from './scene-manifest';
+import { registerSparkExport } from './spark-export';
 import { BoxSelection } from './tools/box-selection';
 import { BrushSelection } from './tools/brush-selection';
 import { EyedropperSelection } from './tools/eyedropper-selection';
@@ -261,6 +262,7 @@ const main = async () => {
     registerTimelineEvents(events);
     registerClipStore(events);
     registerSceneManifest(events, scene);
+    registerSparkExport(events, scene);
     registerCameraPosesEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);

@@ -288,6 +288,37 @@ as-is; `.splat`/`.sog` copied as-is (only raw `.ply` is convertible — `ply_to_
   compress far more), manifest rewritten to `.sog`, `.ply` returns 404 — served root auto-navigated to
   player mode and rendered the sphere. Fallback (`--python nope`) warned + copied the raw `.ply`.
 
+## Spark Player export (lightweight offline share) — DONE
+
+**File ▸ Export ▸ Spark Player…** packages the scene's primary atlas avatar as a self-contained,
+**offline**, **progressive** Spark (Luma, WebGL2/three.js, MIT) 3DGS player — a far lighter share than
+the full SuperSplat viewer. Motivation + benchmarks in the sibling spike `supersplat_spike/spark-player/`
+(`.spz` is 2.4× smaller than raw `.splat` and Spark's runtime parse is ~15× faster than our WebCodecs
+atlas decode, because the decode is done once at editor-export time, not per view).
+
+- **`src/spark-export.ts`** (`registerSparkExport`, wired in main.ts; menu item in `ui/menu.ts`). Targets
+  the selected atlas Splat (else the first `isAtlas`). Each in-memory `atlasFrames` `GSplatData` →
+  `serializeSpz` (**spz-js** npm dep) → `.spz`. **No conversion needed:** `deserializeFromSSplat`
+  (loaders/splat.ts) already stores PLY-native conventions spz-js wants — `scale_*`=LOG, `f_dc_*`=SH-DC,
+  `opacity`=LOGIT, `rot_*`=(w,x,y,z); the encoder is a direct field copy + quaternion reorder to
+  `[x,y,z,w]` (normalized). Encoding yields every 4 frames so the shared Progress overlay repaints.
+- **Package** (downloaded `.zip` via the JSZip global): `index.html` + `player.js` +
+  `vendor/{three.module,three.core,OrbitControls,spark.module,jszip.esm}.js` (all local → offline) +
+  `frames/frame_%04d.spz` (HEAD=first 12, individual) + `rest.zip` (tail) + `audio.m4a` +
+  `manifest.json {name,frames,fps,audio,format:'spz',headCount}`.
+- **`public/spark-template/`** (committed, copied to `dist/` by the build) is the player app + vendored
+  libs; the export fetches them from `./spark-template/*` at runtime and bundles them into the zip.
+- **Progressive playback** (`spark-template/player.js`): fetch the HEAD `.spz` individually → show frame
+  0 + start playback/audio in ~50 ms → background-fetch `rest.zip` and append; the loop grows to the full
+  clip. One `SplatMesh` per frame, cycled by `.visible` at fps; audio drives the frame index for A/V sync
+  (autoplay-blocked → a "tap for sound" fallback). Free orbit. `SparkRenderer` MUST be in the scene or
+  nothing draws; our `.spz` is already Y-up (`rot=0`), heads ~0.5u at origin so camera sits at z≈0.95.
+- **GOTCHA:** three 0.178's `three.module.js` re-exports from `./three.core.js` — BOTH must be vendored.
+- Verified end-to-end in Chrome (FOOD_3): editor export → 52.7 MB zip (12 head + rest.zip + audio) →
+  unzip + serve → progressive load, photoreal upright render, animation, orbit, audio fallback.
+- **v2 (deferred):** camera-flythrough export (`poseSets` → Spark `startAnim:'animTrack'`), multi-track /
+  multiple avatars, Web-Worker encoding. Full spec: `supersplat_spike/spark-player/DESIGN.md`.
+
 ## Decode speed (WebCodecs)
 
 `loaders/atlas.ts` `decodeVideoAllFrames` decodes every frame via **mediabunny (WebCodecs)** —

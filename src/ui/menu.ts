@@ -174,6 +174,11 @@ class Menu extends Container {
             icon: createSvg(sceneExport),
             isEnabled: () => !events.invoke('scene.empty'),
             onSelect: () => events.fire('flexScene.export')
+        }, {
+            text: 'Spark Player...',
+            icon: createSvg(sceneExport),
+            isEnabled: () => !events.invoke('scene.empty'),
+            onSelect: () => events.invoke('sparkExport')
         }]);
 
         const openRecentMenuPanel = new MenuPanel([]);

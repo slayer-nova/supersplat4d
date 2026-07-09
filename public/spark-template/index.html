@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>FlexAvatar</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; overflow: hidden;
+      font: 13px/1.5 system-ui, -apple-system, sans-serif; color: #ddd; touch-action: none; }
+    #viewer { position: fixed; inset: 0; }
+    #viewer canvas { display: block; }
+    /* centered loading bar, fades out when done */
+    #load { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); width: min(300px, 70vw);
+      z-index: 5; transition: opacity .5s ease; text-align: center; }
+    #load-label { margin-bottom: 8px; color: #bbb; letter-spacing: .02em; }
+    #load-bg { height: 6px; background: #2a2a2a; border-radius: 3px; overflow: hidden; }
+    #load-bar { height: 100%; width: 0%; background: linear-gradient(90deg,#7b6cff,#a99bff); transition: width .1s linear; }
+    #err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 20px;
+      z-index: 6; color: #ff8080; }
+    /* tap-to-start-audio hint (some browsers block autoplay) */
+    #tap { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5;
+      background: rgba(0,0,0,.55); padding: 7px 14px; border-radius: 20px; cursor: pointer;
+      display: none; user-select: none; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three.module.js",
+      "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+      "@sparkjsdev/spark": "./vendor/spark.module.js",
+      "jszip": "./vendor/jszip.esm.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="viewer"></div>
+  <div id="load"><div id="load-label">Loading…</div><div id="load-bg"><div id="load-bar"></div></div></div>
+  <div id="tap">🔊 tap for sound</div>
+  <div id="err"></div>
+  <script type="module" src="./player.js"></script>
+</body>
+</html>
