@@ -12,6 +12,8 @@ Optional (for segment computation):
     pip install torch
 """
 
+from __future__ import annotations  # PEP 604 `X | Y` annotations on Python 3.9
+
 import argparse
 import io
 import json

@@ -246,16 +246,31 @@ autoplayed, orbited. **Gotcha:** strip eruda BEFORE injecting the auto-nav `<scr
 greedy eruda-init match swallows everything from the injected script up to `eruda.init()`, deleting the
 manifest/css/jszip links.
 
-**SOG static compression — DECISION PENDING.** The user wants static (non-4D) sources SOG-compressed at
-package time to shrink the folder. Atlas (mp4) and sog4d sources are already compressed; only a raw
-`.ply`/`.splat` **static** source is large. The fork owns `ply_to_sog4d.py` whose CLI
-(`python ply_to_sog4d.py --ply X.ply -o X.sog`) writes a static compressed `.sog` (SOG v2), and the
-editor **reads** `.sog` — but note `src/asset-loader.ts::load` has no `.sog` branch (the `.sog` reader
-lives in `file-handler.ts` isSog/importSog), so a manifest `splat` source rewritten to a `.sog` URL
-would NOT load through the scene-import path without a loader change. No scene currently has a static
-source to test against. Options: (A) packaging shells out to the conda `ply_to_sog4d.py` CLI (real
-`.sog`, couples the share script to Python + adds a loader `.sog` branch); (B) editor compresses static
-sources via SuperSplat's built-in `serializePlyCompressed` (compressed `.ply`, pure browser) on export.
+### SOG static compression at package time (DONE, verified)
+
+Static (non-4D) sources are SHRUNK when packaging: a raw `.ply` source → a compressed `.sog` (SOG v2,
+a zip of `meta.json` + lossless WebP). Atlas (mp4) and `sog4d` sources are already compressed and copied
+as-is; `.splat`/`.sog` copied as-is (only raw `.ply` is convertible — `ply_to_sog4d.py` reads PLY).
+
+- **Converter:** the fork's own `ply_to_sog4d.py` (`--ply X.ply -o X.sog`, `write_sog` → SOG v2). Needs
+  the FlexAvatar conda Python with `numpy`/`plyfile`/`pillow`/**`scikit-learn`** (`encode_scales`/
+  `encode_sh0` k-means). Added `from __future__ import annotations` to the top so its PEP-604 `X | Y`
+  annotations run on the env's Python 3.9 (was written for 3.10+).
+- **No loader change was needed.** `src/asset-loader.ts::load` routes a `.sog` filename through its
+  `else` branch → `loadGsplat`, and the PlayCanvas engine's gsplat loader natively parses "ply,
+  compressed.ply, **sog**, sog-bundle" (`loaders/gsplat.ts:36`). So a manifest `splat` source whose
+  `url`/`name` end in `.sog` loads through the same scene-import path as any static source — verified
+  in Chrome (a 12k-splat sphere `.sog` renders).
+- **`scripts/package-scene.js`:** for each static `.ply` source it runs the converter, writes the
+  `.sog` into the output, and rewrites that source's `url`+`name` (and any clip `sourceName`) from
+  `.ply` to `.sog` in the OUTPUT manifest — the raw `.ply` is never shipped. Flags: `--no-sog` (copy
+  raw), `--python PATH` / `FLEXAVATAR_PYTHON` (default `python`), `--sog-script PATH`. **Graceful:** a
+  missing/broken Python or a failed conversion warns and copies the raw `.ply` (no manifest rewrite) —
+  packaging never aborts over one source.
+- **Verified end-to-end:** a manifest referencing `models/test_sphere.ply` (0.7 MB) packaged to a
+  folder whose `models/` holds only `test_sphere.sog` (0.08 MB, **8.6× smaller**; real FLEX SH gaussians
+  compress far more), manifest rewritten to `.sog`, `.ply` returns 404 — served root auto-navigated to
+  player mode and rendered the sphere. Fallback (`--python nope`) warned + copied the raw `.ply`.
 
 ## Decode speed (WebCodecs)
 

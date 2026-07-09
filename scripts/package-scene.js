@@ -3,27 +3,43 @@
 // bundle + the manifest + ONLY the bakes/models the manifest references, with index.html rewritten
 // to auto-open the scene in read-only player mode (?loadscene=…&player=1). Serve/host the folder.
 //
+// Static (non-4D) sources are SHRUNK by compressing a raw .ply → .sog (SuperSplat's SOG v2, a
+// zip of meta.json + lossless WebP) via the fork's ply_to_sog4d.py; the editor loads .sog natively
+// (engine gsplat loader). Atlas (mp4) and sog4d sources are already compressed and copied as-is.
+//
 //   npm run build                                  # produce dist/ first
 //   node scripts/package-scene.js my.flexscene.json [--out ./share/mydemo] [--dist ./dist]
 //                                                  [--manifest-name scene.flexscene.json] [--keep-eruda]
+//                                                  [--no-sog] [--python PATH] [--sog-script PATH]
+//
+// SOG compression needs Python with numpy/plyfile/pillow/scikit-learn (the FlexAvatar conda env).
+// Point --python at it (or set FLEXAVATAR_PYTHON); if conversion fails, the raw .ply is copied and a
+// warning is printed — packaging never aborts over one source.
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 // ---- args ----------------------------------------------------------------
 const argv = process.argv.slice(2);
 let manifestArg = null;
-const opts = { dist: './dist', out: null, manifestName: 'scene.flexscene.json', keepEruda: false };
+const opts = {
+    dist: './dist', out: null, manifestName: 'scene.flexscene.json', keepEruda: false,
+    sog: true, python: process.env.FLEXAVATAR_PYTHON || 'python', sogScript: null
+};
 for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dist') opts.dist = argv[++i];
     else if (a === '--out') opts.out = argv[++i];
     else if (a === '--manifest-name') opts.manifestName = argv[++i];
     else if (a === '--keep-eruda') opts.keepEruda = true;
+    else if (a === '--no-sog') opts.sog = false;
+    else if (a === '--python') opts.python = argv[++i];
+    else if (a === '--sog-script') opts.sogScript = argv[++i];
     else if (!a.startsWith('--')) manifestArg = a;
 }
 if (!manifestArg) {
-    console.error('Usage: node scripts/package-scene.js <scene.flexscene.json> [--out DIR] [--dist DIR] [--manifest-name NAME] [--keep-eruda]');
+    console.error('Usage: node scripts/package-scene.js <scene.flexscene.json> [--out DIR] [--dist DIR] [--manifest-name NAME] [--keep-eruda] [--no-sog] [--python PATH] [--sog-script PATH]');
     process.exit(1);
 }
 
@@ -31,6 +47,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const manifestPath = path.resolve(repoRoot, manifestArg);
 const distDir = path.resolve(repoRoot, opts.dist);
 const outDir = path.resolve(repoRoot, opts.out || `./dist-share/${path.basename(manifestArg).replace(/\.[^.]+$/, '')}`);
+const sogScript = opts.sogScript ? path.resolve(repoRoot, opts.sogScript) : path.join(repoRoot, 'ply_to_sog4d.py');
 
 // ---- helpers -------------------------------------------------------------
 const MODEL_EXT = new Set(['.sog4d', '.sog', '.ply', '.splat', '.lcc']);
@@ -57,6 +74,28 @@ const copyDirSync = (src, dest) => {
     return true;
 };
 
+// Compress a raw static .ply -> .sog via ply_to_sog4d.py. Returns bytes written, or 0 on any failure
+// (missing script/python, subprocess error, no output) — the caller then copies the raw .ply.
+const tryConvertSog = (srcPly, destSog) => {
+    if (!fs.existsSync(sogScript)) {
+        warnings.push(`SOG script not found at ${path.relative(repoRoot, sogScript)} — copied raw .ply`);
+        return 0;
+    }
+    try {
+        fs.mkdirSync(path.dirname(destSog), { recursive: true });
+        execFileSync(opts.python, [sogScript, '--ply', srcPly, '-o', destSog], { stdio: 'pipe' });
+        if (!fs.existsSync(destSog)) return 0;
+        const sz = fs.statSync(destSog).size;
+        filesCopied++;
+        bytesCopied += sz;
+        return sz;
+    } catch (e) {
+        const tail = (e.stderr || e.stdout || e.message || '').toString().trim().split('\n').slice(-2).join(' ');
+        warnings.push(`SOG conversion failed (${opts.python}) — copied raw .ply: ${tail}`);
+        return 0;
+    }
+};
+
 // ---- 1. read + validate manifest ----------------------------------------
 if (!fs.existsSync(manifestPath)) {
     console.error(`❌ Manifest not found: ${manifestPath}`);
@@ -72,8 +111,11 @@ if (manifest.type !== 'flexavatar-scene') {
     process.exit(1);
 }
 
-// ---- 2. collect referenced assets (dedupe sog4d by url; skip cross-origin) --
-const assets = []; // { kind:'dir'|'file', rel }
+// ---- 2. classify referenced sources (dedupe by url; skip cross-origin) ----
+//   atlas                       -> copy the bake dir as-is (mp4 already compressed)
+//   static raw .ply (+ --sog)   -> compress to .sog (rewrite url/name in the output manifest)
+//   sog4d / .sog / .splat / …   -> copy the file as-is
+const assets = []; // { kind:'dir'|'file', rel, convert?, sogRel?, url?, name? }
 const seen = new Set();
 for (const s of (manifest.sources || [])) {
     const url = s.url || '';
@@ -81,10 +123,16 @@ for (const s of (manifest.sources || [])) {
     if (seen.has(url)) continue; // dedupe (matches import: one .sog4d recreates all its sub-splats)
     seen.add(url);
     const rel = stripDot(url);
-    assets.push({ kind: s.kind === 'atlas' ? 'dir' : 'file', rel });
+    if (s.kind === 'atlas') {
+        assets.push({ kind: 'dir', rel });
+    } else if (opts.sog && /\.ply$/i.test(rel)) {
+        assets.push({ kind: 'file', rel, convert: true, sogRel: rel.replace(/\.ply$/i, '.sog'), url, name: s.name });
+    } else {
+        assets.push({ kind: 'file', rel });
+    }
 }
 
-// ---- 3+4. output dir + copy the bundle by EXCLUSION ----------------------
+// ---- 3. output dir + copy the bundle by EXCLUSION ------------------------
 // (content-hashed chunk names change per build, so copy everything except the asset dirs and
 //  root-level model files — those are copied selectively below.)
 fs.mkdirSync(outDir, { recursive: true });
@@ -98,18 +146,48 @@ for (const e of fs.readdirSync(distDir, { withFileTypes: true })) {
     }
 }
 
-// ---- 5. copy the manifest into the output root ---------------------------
-fs.copyFileSync(manifestPath, path.join(outDir, opts.manifestName));
-
-// ---- 6. copy ONLY the referenced assets, preserving their relative path ---
+// ---- 4. copy/compress ONLY the referenced assets, preserving relative path --
+// Rewrite maps are populated ONLY on a successful conversion, then applied to the output manifest.
+const urlRewrite = new Map();   // old source url -> new (.sog) url
+const nameRewrite = new Map();  // old source/clip name -> new (.sog) name
+const sogReport = [];           // { rel, plyBytes, sogBytes }
 for (const a of assets) {
     const src = path.join(distDir, a.rel);
-    const dest = path.join(outDir, a.rel);
-    const ok = a.kind === 'dir' ? copyDirSync(src, dest) : (fs.existsSync(src) ? (copyFileSync(src, dest), true) : false);
-    if (!ok) warnings.push(`referenced asset missing in dist (place it under public/${a.rel} and rebuild): ${a.rel}`);
+    if (a.kind === 'dir') {
+        if (!copyDirSync(src, path.join(outDir, a.rel))) warnings.push(`referenced bake missing in dist (place it under public/${a.rel} and rebuild): ${a.rel}`);
+        continue;
+    }
+    if (!fs.existsSync(src)) {
+        warnings.push(`referenced asset missing in dist (place it under public/${a.rel} and rebuild): ${a.rel}`);
+        continue;
+    }
+    if (a.convert) {
+        const plyBytes = fs.statSync(src).size;
+        const sogBytes = tryConvertSog(src, path.join(outDir, a.sogRel));
+        if (sogBytes > 0) {
+            urlRewrite.set(a.url, `./${a.sogRel}`);
+            if (a.name) nameRewrite.set(a.name, a.name.replace(/\.ply$/i, '.sog'));
+            sogReport.push({ rel: a.rel, plyBytes, sogBytes });
+        } else {
+            copyFileSync(src, path.join(outDir, a.rel)); // fallback: raw .ply, no manifest rewrite
+        }
+    } else {
+        copyFileSync(src, path.join(outDir, a.rel));
+    }
 }
 
-// ---- 7. rewrite index.html: auto-open the scene in player mode + strip eruda --
+// ---- 5. write the manifest into the output root (with .ply -> .sog rewrites) --
+const outManifest = JSON.parse(JSON.stringify(manifest));
+for (const s of (outManifest.sources || [])) {
+    if (s.url && urlRewrite.has(s.url)) s.url = urlRewrite.get(s.url);
+    if (s.name && nameRewrite.has(s.name)) s.name = nameRewrite.get(s.name);
+}
+for (const c of (outManifest.clips || [])) {
+    if (c.sourceName && nameRewrite.has(c.sourceName)) c.sourceName = nameRewrite.get(c.sourceName);
+}
+fs.writeFileSync(path.join(outDir, opts.manifestName), JSON.stringify(outManifest, null, 2));
+
+// ---- 6. rewrite index.html: auto-open the scene in player mode + strip eruda --
 const indexPath = path.join(outDir, 'index.html');
 if (fs.existsSync(indexPath)) {
     let html = fs.readFileSync(indexPath, 'utf8');
@@ -131,11 +209,20 @@ if (fs.existsSync(indexPath)) {
     warnings.push('index.html not found in dist — bundle may be incomplete.');
 }
 
-// ---- 8. summary ----------------------------------------------------------
+// ---- 7. summary ----------------------------------------------------------
 const mb = (bytesCopied / (1024 * 1024)).toFixed(1);
 console.log(`\n📦 Packaged scene → ${outDir}`);
 console.log(`   ${filesCopied} files, ${mb} MB`);
-console.log(`   assets: ${assets.map(a => a.rel).join(', ') || '(none)'}`);
+console.log(`   assets: ${assets.map(a => (a.convert && urlRewrite.has(a.url)) ? `${a.sogRel} (from .ply)` : a.rel).join(', ') || '(none)'}`);
+if (sogReport.length) {
+    console.log(`\n🗜️  SOG-compressed ${sogReport.length} static source(s):`);
+    for (const r of sogReport) {
+        const ratio = (r.plyBytes / r.sogBytes).toFixed(1);
+        console.log(`   - ${r.rel}: ${(r.plyBytes / 1e6).toFixed(1)} MB → ${(r.sogBytes / 1e6).toFixed(2)} MB (.sog, ${ratio}× smaller)`);
+    }
+} else if (opts.sog) {
+    console.log(`   (no raw .ply static sources to SOG-compress)`);
+}
 if (warnings.length) {
     console.log(`\n⚠️  ${warnings.length} warning(s):`);
     warnings.forEach(w => console.log(`   - ${w}`));
