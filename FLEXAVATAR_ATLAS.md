@@ -303,9 +303,19 @@ atlas decode, because the decode is done once at editor-export time, not per vie
   `opacity`=LOGIT, `rot_*`=(w,x,y,z); the encoder is a direct field copy + quaternion reorder to
   `[x,y,z,w]` (normalized). Encoding yields every 4 frames so the shared Progress overlay repaints.
 - **Package** (downloaded `.zip` via the JSZip global): `index.html` + `player.js` +
-  `vendor/{three.module,three.core,OrbitControls,spark.module,jszip.esm}.js` (all local → offline) +
-  `frames/frame_%04d.spz` (HEAD=first 12, individual) + `rest.zip` (tail) + `audio.m4a` +
+  `vendor/{three.module,three.core,OrbitControls,VRButton,Pass,spark.module,jszip.esm}.js` (all local →
+  offline) + `frames/frame_%04d.spz` (HEAD=first 12, individual) + `rest.zip` (tail) + `audio.m4a` +
   `manifest.json {name,frames,fps,audio,format:'spz',headCount}`.
+- **Spark 2.1.0 + WebXR/VR:** vendored **Spark 2.1.0** (World Labs; peer three **≥0.180** → vendored
+  three 0.180.0; Spark also imports `three/addons/postprocessing/Pass.js`; its workers are inline
+  fflate blobs, so no extra worker files). Our 0.1.10 usage was already 2.0-compatible (explicit
+  `new SparkRenderer({renderer}); scene.add()`, `SplatMesh({fileBytes,fileType})`, `mesh.initialized`
+  all unchanged). Player has an **Enter VR** button (`VRButton.createButton(renderer)` +
+  `renderer.xr.enabled`; shows "VR NOT SUPPORTED" with no headset). In an immersive session the headset
+  drives the camera and OrbitControls are skipped (`!renderer.xr.isPresenting`); the avatar group moves
+  to `(0,1.4,-1.1)` (front, eye height on the local-floor origin) on `sessionstart`, restores on
+  `sessionend`. Verified on desktop (Spark 2.1.0 renders + animates, VR button auto-detects); actual
+  immersive session needs a headset (untested here).
 - **`public/spark-template/`** (committed, copied to `dist/` by the build) is the player app + vendored
   libs; the export fetches them from `./spark-template/*` at runtime and bundles them into the zip.
 - **Progressive playback** (`spark-template/player.js`): fetch the HEAD `.spz` individually → show frame

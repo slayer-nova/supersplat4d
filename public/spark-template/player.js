@@ -9,6 +9,7 @@
 import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
 import JSZip from 'jszip';
 
 const viewer = document.getElementById('viewer');
@@ -25,7 +26,12 @@ camera.position.set(0, 0, 0.95); // FLEX heads: ~0.5u tall at origin, sub-mm spl
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(viewer.offsetWidth, viewer.offsetHeight);
+renderer.xr.enabled = true; // WebXR: Spark renders splats per-eye in an immersive session
 viewer.appendChild(renderer.domElement);
+
+// "Enter VR" — three's VRButton auto-detects support (hides / shows "VR NOT SUPPORTED" otherwise).
+const vrButton = VRButton.createButton(renderer);
+document.body.appendChild(vrButton);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
@@ -41,6 +47,11 @@ controls.enableDamping = true;
 controls.minDistance = 0.4;
 controls.maxDistance = 2.0;
 controls.update();
+
+// In an immersive session the headset drives the camera, so move the avatar in front of the viewer
+// at eye height (local-floor origin ≈ floor); restore to the desktop framing on exit.
+renderer.xr.addEventListener('sessionstart', () => group.position.set(0, 1.4, -1.1));
+renderer.xr.addEventListener('sessionend', () => group.position.set(0, 0, 0));
 
 addEventListener('resize', () => {
   camera.aspect = viewer.offsetWidth / viewer.offsetHeight;
@@ -79,7 +90,7 @@ const startPlayback = () => {
       frames[frameIndex].visible = true;
       lastSwap = t;
     }
-    controls.update();
+    if (!renderer.xr.isPresenting) controls.update(); // headset owns the camera in VR
     renderer.render(scene, camera);
   });
 };

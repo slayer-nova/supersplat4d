@@ -18,7 +18,7 @@
     #err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 20px;
       z-index: 6; color: #ff8080; }
     /* tap-to-start-audio hint (some browsers block autoplay) */
-    #tap { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5;
+    #tap { position: fixed; left: 16px; bottom: 22px; z-index: 5;
       background: rgba(0,0,0,.55); padding: 7px 14px; border-radius: 20px; cursor: pointer;
       display: none; user-select: none; }
   </style>
@@ -27,6 +27,8 @@
     "imports": {
       "three": "./vendor/three.module.js",
       "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+      "three/addons/webxr/VRButton.js": "./vendor/VRButton.js",
+      "three/addons/postprocessing/Pass.js": "./vendor/Pass.js",
       "@sparkjsdev/spark": "./vendor/spark.module.js",
       "jszip": "./vendor/jszip.esm.js"
     }
