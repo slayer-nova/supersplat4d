@@ -10,9 +10,14 @@ import { Scene } from './scene';
 // and hook up as each source re-registers by name.
 //
 // Manifest shape:
-//   { version, type:'flexavatar-scene', fps, frames,
-//     sources: [ { kind:'atlas'|'splat', name, url, transform:{position,rotation,scale} } ],
-//     clips:   [ { sourceName, trackIndex, startFrame, sourceIn, sourceOut, timeScale, loop } ] }
+//   { version, type:'flexavatar-scene', fps, frames, smoothness,
+//     sources:  [ { kind:'atlas'|'splat', name, url, transform:{position,rotation,scale} } ],
+//     clips:    [ { sourceName, trackIndex, startFrame, sourceIn, sourceOut, timeScale, loop } ],
+//     poseSets: [ { name, poses:[ { name, frame, position:[x,y,z], target:[x,y,z] } ] } ] }
+// poseSets is SuperSplat's camera keyframe animation (src/camera-poses.ts): keyed camera poses →
+// a looping cubic-spline flythrough that plays as the timeline advances, incl. the standalone
+// player. Same shape as the native .ssproj docSerialize.poseSets, so a scene round-trips its camera
+// animation through .flexscene.json too.
 
 const registerSceneManifest = (events: Events, scene: Scene) => {
     const buildManifest = () => {
@@ -48,8 +53,11 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
             type: 'flexavatar-scene',
             fps: (events.invoke('timeline.frameRate') ?? 30) as number,
             frames: (events.invoke('timeline.frames') ?? 0) as number,
+            smoothness: (events.invoke('timeline.smoothness') ?? 1) as number,
             sources,
-            clips: (events.invoke('docSerialize.clips') ?? []) as any[]
+            clips: (events.invoke('docSerialize.clips') ?? []) as any[],
+            // Camera keyframe animation → a looping spline flythrough (see the header note).
+            poseSets: (events.invoke('docSerialize.poseSets') ?? []) as any[]
         };
         return { manifest, missingModels };
     };
@@ -150,6 +158,11 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
             throw new Error('not a flexavatar-scene manifest');
         }
         events.fire('timeline.setFrameRate', manifest.fps ?? 30);
+        // Restore the timeline LENGTH + spline smoothness up front: the camera-pose flythrough spline's
+        // duration IS timeline.frames and it drops keys with frame >= duration, so a wrong/zero length
+        // (e.g. a clip-less camera-only scene) would silently discard the animation.
+        events.fire('timeline.setFrames', manifest.frames ?? 180);
+        events.fire('timeline.setSmoothness', manifest.smoothness ?? 1);
         // docDeserialize.clips is a registered function (returns), so it must be INVOKEd, not fired —
         // this seeds the clips as `pending` so they reattach as each source re-registers by name.
         events.invoke('docDeserialize.clips', manifest.clips ?? []);
@@ -182,6 +195,10 @@ const registerSceneManifest = (events: Events, scene: Scene) => {
                 splat.makeWorldBoundDirty?.();
             }
         }
+        // Restore the camera keyframe animation LAST, after the timeline length has settled, so the
+        // flythrough spline is built against the final duration. It then plays as the timeline advances
+        // (the standalone player autoplays it; no keyframe UI needed).
+        events.invoke('docDeserialize.poseSets', manifest.poseSets ?? []);
         scene.forceRender = true;
         scene.app.renderNextFrame = true;
     });

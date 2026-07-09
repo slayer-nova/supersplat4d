@@ -185,8 +185,24 @@ Scene…** menu item), `flexScene.import(manifest)` (rebuild). Import order: `in
 `docDeserialize.clips` to seed the clips as `pending`, then load each source — clips reattach as each
 node re-registers by name (no duplicate default). `?loadscene=<url>` fetches + imports on startup.
 
-Manifest: `{ version, type:'flexavatar-scene', fps, frames, sources:[{kind,name,url,transform}],
-clips:[{sourceName,trackIndex,startFrame,sourceIn,sourceOut,timeScale,loop}] }`.
+Manifest: `{ version, type:'flexavatar-scene', fps, frames, smoothness, sources:[{kind,name,url,transform}],
+clips:[{sourceName,trackIndex,startFrame,sourceIn,sourceOut,timeScale,loop}],
+poseSets:[{name,poses:[{name,frame,position,target}]}] }`.
+
+**Camera keyframe animation (`poseSets`).** SuperSplat's own camera-pose system (`src/camera-poses.ts`,
+active) keyframes camera `{position,target}` at frames → a **looping cubic-spline flythrough** that
+plays as the timeline advances (the addKey/removeKey timeline buttons author it; keyframes show as
+diamonds on the ruler). Export saves it verbatim from `docSerialize.poseSets` (same shape as the native
+`.ssproj`); import restores `timeline.setFrames`(length) + `timeline.setSmoothness` **before**
+`docDeserialize.poseSets` (the spline duration IS `timeline.frames` and it drops keys past it — a
+clip-less camera scene would otherwise lose the animation), and the poses are restored LAST so the
+spline builds against the settled length. The standalone player then **autoplays the camera flythrough**
+— no keyframe UI needed. NOTE: import now also restores the timeline LENGTH from `manifest.frames`
+(previously only `fps` was restored — a latent gap). `package-scene.js` carries `poseSets` through
+untouched (JSON passthrough alongside the source-url rewrites). Verified in Chrome: a sphere scene with
+keys at frame 0 (`[3,.5,0]`) and 30 (`[0,.5,3]`) → the spline yields `[2.47,.5,.53]`@8, `[1.5,.5,1.5]`
+@15, `[0,.5,3]`@30, and the player visibly orbits X-front→Z-front on playback. (A background browser
+tab pauses RAF → playback only advances when the tab is foreground; irrelevant to a real viewer.)
 
 **Source-URL stability (review #6, option A):** three `kind`s each reference a STABLE served location
 so the scene reloads — `atlas` → the bake dir (`atlasBase`); `sog4d`/`splat` → a served file URL via
