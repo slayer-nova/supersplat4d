@@ -9,7 +9,6 @@
 import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
 import JSZip from 'jszip';
 
 const viewer = document.getElementById('viewer');
@@ -23,15 +22,34 @@ const fail = (m) => { errEl.style.display = 'grid'; errEl.textContent = 'Could n
 // ---- three + spark scene -------------------------------------------------
 const camera = new THREE.PerspectiveCamera(20, viewer.offsetWidth / viewer.offsetHeight, 0.01, 100);
 camera.position.set(0, 0, 0.95); // FLEX heads: ~0.5u tall at origin, sub-mm splats → sit close
-const renderer = new THREE.WebGLRenderer({ antialias: false });
+const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true }); // alpha → AR passthrough
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(viewer.offsetWidth, viewer.offsetHeight);
 renderer.xr.enabled = true; // WebXR: Spark renders splats per-eye in an immersive session
 viewer.appendChild(renderer.domElement);
 
-// "Enter VR" — three's VRButton auto-detects support (hides / shows "VR NOT SUPPORTED" otherwise).
-const vrButton = VRButton.createButton(renderer);
-document.body.appendChild(vrButton);
+// Our own Enter VR / Enter AR buttons — request the session directly (three's VRButton/ARButton
+// overlapped and disabled awkwardly). Each is enabled only if the headset supports that mode; on a
+// non-XR desktop they read "VR n/a" / "AR n/a", disabled. VR = black void; AR = passthrough.
+const enterXR = async (mode) => {
+  if (!navigator.xr) return;
+  try {
+    const session = await navigator.xr.requestSession(mode, {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'],
+      domOverlay: { root: document.body }   // lets our DOM Recenter button show + be tappable in mobile AR
+    });
+    renderer.xr.setReferenceSpaceType('local-floor');
+    await renderer.xr.setSession(session);
+  } catch (e) { console.warn('XR session failed', mode, e); }
+};
+const vrBtn = document.getElementById('enter-vr');
+const arBtn = document.getElementById('enter-ar');
+vrBtn.addEventListener('click', () => enterXR('immersive-vr'));
+arBtn.addEventListener('click', () => enterXR('immersive-ar'));
+if (navigator.xr) {
+  navigator.xr.isSessionSupported('immersive-vr').then((ok) => { vrBtn.disabled = !ok; vrBtn.textContent = ok ? 'Enter VR' : 'VR n/a'; }).catch(() => {});
+  navigator.xr.isSessionSupported('immersive-ar').then((ok) => { arBtn.disabled = !ok; arBtn.textContent = ok ? 'Enter AR' : 'AR n/a'; }).catch(() => {});
+} else { vrBtn.textContent = 'VR n/a'; arBtn.textContent = 'AR n/a'; }
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
@@ -48,10 +66,102 @@ controls.minDistance = 0.4;
 controls.maxDistance = 2.0;
 controls.update();
 
-// In an immersive session the headset drives the camera, so move the avatar in front of the viewer
-// at eye height (local-floor origin ≈ floor); restore to the desktop framing on exit.
-renderer.xr.addEventListener('sessionstart', () => group.position.set(0, 1.4, -1.1));
-renderer.xr.addEventListener('sessionend', () => group.position.set(0, 0, 0));
+// ---- WebXR: passthrough + controller grab/scale/rotate --------------------
+const DARK = new THREE.Color(0x111111);
+const xrUI = document.getElementById('xr');
+const recenterBtn = document.getElementById('recenter');
+const _cp = new THREE.Vector3(), _cd = new THREE.Vector3();
+const isPassthrough = () => {
+  const s = renderer.xr.getSession();
+  try { return !!s && s.environmentBlendMode && s.environmentBlendMode !== 'opaque'; } catch (e) { return false; }
+};
+
+// Controllers — grip(squeeze) to grab (move+rotate); both grips to scale+rotate+move; A/X/B/Y to reset.
+const controllers = [renderer.xr.getController(0), renderer.xr.getController(1)];
+const _ray = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -0.25)]);
+controllers.forEach((c) => { c.add(new THREE.Line(_ray, new THREE.LineBasicMaterial({ color: 0x9b8cff }))); scene.add(c); });
+const gripping = [false, false];
+let grabMode = 'none';   // 'none' | 'one' | 'two'
+let two = null;          // two-hand start refs
+const _p0 = new THREE.Vector3(), _p1 = new THREE.Vector3(), _v = new THREE.Vector3(), _q = new THREE.Quaternion();
+
+// Recenter — snap the avatar ~0.9 m in front of wherever the viewer is looking, facing them, scale 1.
+// (Fixes mobile AR "drifts far": the phone origin ≠ where you're pointing.) Reachable on mobile via
+// the dom-overlay button, and in VR via the controller A/X button.
+const recenter = () => {
+  scene.attach(group);
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_cp);
+  cam.getWorldDirection(_cd); _cd.y = 0;
+  if (_cd.lengthSq() < 1e-6) _cd.set(0, 0, -1); else _cd.normalize();
+  const DIST = 0.9;
+  group.position.set(_cp.x + _cd.x * DIST, _cp.y - 0.15, _cp.z + _cd.z * DIST);
+  group.scale.setScalar(1);
+  group.rotation.set(0, Math.atan2(_cp.x - group.position.x, _cp.z - group.position.z), 0); // +Z faces viewer
+  grabMode = 'none'; two = null; gripping[0] = gripping[1] = false;
+};
+recenterBtn.addEventListener('click', recenter);
+const onGrip = () => {
+  const n = (gripping[0] ? 1 : 0) + (gripping[1] ? 1 : 0);
+  if (n === 1) {
+    controllers[gripping[0] ? 0 : 1].attach(group);  // group follows this controller (translate + rotate)
+    grabMode = 'one'; two = null;
+  } else if (n === 2) {
+    scene.attach(group);                             // leave single-hand; drive scale/rotate/move per-frame
+    controllers[0].getWorldPosition(_p0); controllers[1].getWorldPosition(_p1);
+    two = { dist: _p0.distanceTo(_p1) || 1e-4, scale: group.scale.x,
+            mid: _p0.clone().add(_p1).multiplyScalar(0.5), pos: group.position.clone(),
+            vec: _p1.clone().sub(_p0).normalize(), quat: group.quaternion.clone() };
+    grabMode = 'two';
+  } else {
+    scene.attach(group);                             // release — the avatar stays where you left it
+    grabMode = 'none'; two = null;
+  }
+};
+controllers.forEach((c, i) => {
+  c.addEventListener('squeezestart', () => { gripping[i] = true; onGrip(); });
+  c.addEventListener('squeezeend', () => { gripping[i] = false; onGrip(); });
+});
+let resetLatch = false;
+const pollReset = () => {
+  const s = renderer.xr.getSession(); if (!s) return;
+  let pressed = false;
+  for (const src of s.inputSources) {
+    const gp = src.gamepad;
+    if (gp && (gp.buttons[4]?.pressed || gp.buttons[5]?.pressed)) pressed = true; // A/X or B/Y
+  }
+  if (pressed && !resetLatch) { resetLatch = true; recenter(); } else if (!pressed) resetLatch = false;
+};
+const updateTwoHand = () => {
+  if (grabMode !== 'two' || !two) return;
+  controllers[0].getWorldPosition(_p0); controllers[1].getWorldPosition(_p1);
+  const dist = _p0.distanceTo(_p1) || 1e-4;
+  group.scale.setScalar(two.scale * (dist / two.dist));
+  _v.copy(_p1).sub(_p0).normalize();
+  _q.setFromUnitVectors(two.vec, _v);
+  group.quaternion.copy(_q).multiply(two.quat);
+  group.position.set(
+    two.pos.x + ((_p0.x + _p1.x) * 0.5 - two.mid.x),
+    two.pos.y + ((_p0.y + _p1.y) * 0.5 - two.mid.y),
+    two.pos.z + ((_p0.z + _p1.z) * 0.5 - two.mid.z));
+};
+
+renderer.xr.addEventListener('sessionstart', () => {
+  const ar = isPassthrough();
+  scene.background = ar ? null : DARK;   // transparent → passthrough shows through
+  renderer.setClearAlpha(ar ? 0 : 1);
+  // Entering XR is a user gesture → force sound on (no "tap for sound" reachable in a headset).
+  if (audioEl) { audioEl.muted = false; audioEl.play().catch(() => {}); tapEl.style.display = 'none'; }
+  xrUI.style.display = 'none';           // hide Enter VR/AR
+  recenterBtn.style.display = 'block';   // show Recenter (tappable in mobile AR via dom-overlay)
+  setTimeout(recenter, 350);             // recenter once the viewer pose is valid (first frames)
+});
+renderer.xr.addEventListener('sessionend', () => {
+  scene.background = DARK; renderer.setClearAlpha(1);
+  group.position.set(0, 0, 0); group.quaternion.identity(); group.scale.setScalar(1);
+  xrUI.style.display = 'flex';           // restore Enter VR/AR
+  recenterBtn.style.display = 'none';
+});
 
 addEventListener('resize', () => {
   camera.aspect = viewer.offsetWidth / viewer.offsetHeight;
@@ -90,7 +200,8 @@ const startPlayback = () => {
       frames[frameIndex].visible = true;
       lastSwap = t;
     }
-    if (!renderer.xr.isPresenting) controls.update(); // headset owns the camera in VR
+    if (renderer.xr.isPresenting) { pollReset(); updateTwoHand(); } // grab/scale + reset in XR
+    else controls.update();                                         // headset owns the camera in XR
     renderer.render(scene, camera);
   });
 };

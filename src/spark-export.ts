@@ -15,7 +15,7 @@ import { Scene } from './scene';
 declare const JSZip: any;
 
 const HEAD_FRAMES = 12; // first K frames shipped individually (instant start); the rest go in rest.zip
-const VENDOR = ['three.module.js', 'three.core.js', 'OrbitControls.js', 'VRButton.js', 'Pass.js', 'spark.module.js', 'jszip.esm.js'];
+const VENDOR = ['three.module.js', 'three.core.js', 'OrbitControls.js', 'VRButton.js', 'ARButton.js', 'Pass.js', 'spark.module.js', 'jszip.esm.js'];
 const TEMPLATE_BASE = './spark-template/';
 
 const pad4 = (i: number) => String(i).padStart(4, '0');

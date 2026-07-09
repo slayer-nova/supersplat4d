@@ -310,12 +310,24 @@ atlas decode, because the decode is done once at editor-export time, not per vie
   three 0.180.0; Spark also imports `three/addons/postprocessing/Pass.js`; its workers are inline
   fflate blobs, so no extra worker files). Our 0.1.10 usage was already 2.0-compatible (explicit
   `new SparkRenderer({renderer}); scene.add()`, `SplatMesh({fileBytes,fileType})`, `mesh.initialized`
-  all unchanged). Player has an **Enter VR** button (`VRButton.createButton(renderer)` +
-  `renderer.xr.enabled`; shows "VR NOT SUPPORTED" with no headset). In an immersive session the headset
-  drives the camera and OrbitControls are skipped (`!renderer.xr.isPresenting`); the avatar group moves
-  to `(0,1.4,-1.1)` (front, eye height on the local-floor origin) on `sessionstart`, restores on
-  `sessionend`. Verified on desktop (Spark 2.1.0 renders + animates, VR button auto-detects); actual
-  immersive session needs a headset (untested here).
+  all unchanged). **XR UX (all in `spark-template/player.js`):**
+  - **Own Enter VR / Enter AR buttons** (NOT three's VRButton/ARButton — those overlapped and disabled
+    awkwardly). `navigator.xr.requestSession(mode, {optionalFeatures:[…,'dom-overlay'], domOverlay:{root:
+    body}})` + `renderer.xr.setSession`; each button enabled only if `isSessionSupported(mode)` (else
+    "VR n/a"/"AR n/a"). AR = **passthrough**: `renderer` has `alpha:true`, and on `sessionstart` if the
+    session's `environmentBlendMode !== 'opaque'` we set `scene.background=null` + `setClearAlpha(0)` so
+    the real world shows through.
+  - **Recenter** (dom-overlay button, tappable in mobile AR; also the controller A/X in VR): snaps the
+    avatar ~0.9 m in front of the current viewer look-dir, facing them, scale 1 — fixes mobile-AR "drifts
+    far" (phone origin ≠ where you point). Auto-runs 350 ms after `sessionstart`.
+  - **Controller manipulation** (VR headsets): grip/squeeze = grab (attach group to controller → move +
+    rotate); **both grips = two-hand scale + rotate + translate** (distance ratio, hand-vector yaw,
+    midpoint). Short purple ray on each controller for hand feedback.
+  - **Auto-sound on XR entry** — entering XR is a user gesture, so `audioEl.play()` on `sessionstart`
+    (desktop keeps the "tap for sound" autoplay fallback).
+  - Title = **"SL 4DGS Avatar"**. OrbitControls only when `!renderer.xr.isPresenting`.
+  Verified on desktop (Spark 2.1.0 renders + animates, buttons show "VR n/a"/"AR n/a" side by side, no
+  errors); **actual VR/AR interaction needs a headset/phone — untested on this box.**
 - **`public/spark-template/`** (committed, copied to `dist/` by the build) is the player app + vendored
   libs; the export fetches them from `./spark-template/*` at runtime and bundles them into the zip.
 - **Progressive playback** (`spark-template/player.js`): fetch the HEAD `.spz` individually → show frame
