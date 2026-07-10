@@ -17,10 +17,11 @@
     #load-bar { height: 100%; width: 0%; background: linear-gradient(90deg,#7b6cff,#a99bff); transition: width .1s linear; }
     #err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 20px;
       z-index: 6; color: #ff8080; }
-    /* tap-to-start-audio hint (some browsers block autoplay) */
-    #tap { position: fixed; left: 16px; bottom: 22px; z-index: 5;
-      background: rgba(0,0,0,.55); padding: 7px 14px; border-radius: 20px; cursor: pointer;
-      display: none; user-select: none; }
+    /* persistent sound toggle (stays put; hidden only when the bake has no audio) */
+    #sound { position: fixed; left: 16px; bottom: 22px; z-index: 5;
+      background: rgba(0,0,0,.55); padding: 7px 13px; border-radius: 20px; cursor: pointer;
+      border: 1px solid #555; color: #ddd; font: inherit; user-select: none; }
+    #sound:hover { border-color: #9b8cff; }
     /* our own XR buttons (three's VR/AR buttons overlap + disable poorly) */
     #xr { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 6;
       display: flex; gap: 12px; }
@@ -32,6 +33,14 @@
     #recenter { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 7;
       display: none; background: rgba(0,0,0,.6); color: #ddd; border: 1px solid #9b8cff;
       border-radius: 22px; padding: 11px 26px; font: inherit; cursor: pointer; }
+    /* copyright watermark — front layer, subtle grey, non-interactive (only the link is clickable) */
+    #copyright { position: fixed; right: 14px; bottom: 10px; z-index: 9999;
+      font: 600 10px/1.4 system-ui, -apple-system, sans-serif; letter-spacing: .14em;
+      text-transform: uppercase; color: rgba(255,255,255,.32); pointer-events: none;
+      user-select: none; white-space: nowrap; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+    #copyright a { color: inherit; text-decoration: none; pointer-events: auto; }
+    #copyright a:hover { color: rgba(255,255,255,.7); }
+    @media (max-width: 480px) { #copyright { font-size: 8.5px; letter-spacing: .1em; right: 10px; bottom: 8px; } }
   </style>
   <script type="importmap">
   {
@@ -50,9 +59,10 @@
 <body>
   <div id="viewer"></div>
   <div id="load"><div id="load-label">Loading…</div><div id="load-bg"><div id="load-bar"></div></div></div>
-  <div id="tap">🔊 tap for sound</div>
+  <button id="sound" title="Mute / unmute sound">🔊</button>
   <div id="xr"><button id="enter-vr" disabled>VR…</button><button id="enter-ar" disabled>AR…</button></div>
   <button id="recenter">⟳ Recenter</button>
+  <div id="copyright">© 2026 Shooting Lab Limited · All Rights Reserved · <a href="https://slfpv.com" target="_blank" rel="noopener">slfpv.com</a></div>
   <div id="err"></div>
   <script type="module" src="./player.js"></script>
 </body>

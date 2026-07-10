@@ -15,7 +15,8 @@ const viewer = document.getElementById('viewer');
 const loadEl = document.getElementById('load');
 const loadLabel = document.getElementById('load-label');
 const loadBar = document.getElementById('load-bar');
-const tapEl = document.getElementById('tap');
+const soundEl = document.getElementById('sound');
+function updateSound() { if (soundEl && audioEl) soundEl.textContent = audioEl.muted ? '🔇' : '🔊'; }
 const errEl = document.getElementById('err');
 const fail = (m) => { errEl.style.display = 'grid'; errEl.textContent = 'Could not load avatar: ' + m; console.error(m); };
 
@@ -151,7 +152,7 @@ renderer.xr.addEventListener('sessionstart', () => {
   scene.background = ar ? null : DARK;   // transparent → passthrough shows through
   renderer.setClearAlpha(ar ? 0 : 1);
   // Entering XR is a user gesture → force sound on (no "tap for sound" reachable in a headset).
-  if (audioEl) { audioEl.muted = false; audioEl.play().catch(() => {}); tapEl.style.display = 'none'; }
+  if (audioEl) { audioEl.muted = false; audioEl.play().catch(() => {}); updateSound(); }
   xrUI.style.display = 'none';           // hide Enter VR/AR
   recenterBtn.style.display = 'block';   // show Recenter (tappable in mobile AR via dom-overlay)
   setTimeout(recenter, 350);             // recenter once the viewer pose is valid (first frames)
@@ -188,7 +189,7 @@ const startPlayback = () => {
   started = true;
   loadEl.style.opacity = '0';
   setTimeout(() => { loadEl.style.display = 'none'; }, 600);
-  if (audioEl) audioEl.play().catch(() => { tapEl.style.display = 'block'; }); // autoplay may be blocked
+  if (audioEl) audioEl.play().catch(() => { audioEl.muted = true; updateSound(); }); // autoplay blocked → start muted, toggle unmutes
   renderer.setAnimationLoop((t) => {
     if (frames.length > 1 && (t - lastSwap) > (1000 / fps)) {
       frames[frameIndex].visible = false;
@@ -206,8 +207,13 @@ const startPlayback = () => {
   });
 };
 
-// tap-to-start-audio fallback
-tapEl.addEventListener('click', () => { if (audioEl) audioEl.play().catch(() => {}); tapEl.style.display = 'none'; });
+// persistent mute/unmute toggle — never hides after being pressed
+soundEl.addEventListener('click', () => {
+  if (!audioEl) return;
+  audioEl.muted = !audioEl.muted;
+  if (!audioEl.muted) audioEl.play().catch(() => {});   // unmute counts as the gesture → ensure playing
+  updateSound();
+});
 
 const pad4 = (i) => String(i).padStart(4, '0');
 const setBar = (n, total) => { loadBar.style.width = (n / total * 100).toFixed(1) + '%'; };
@@ -226,7 +232,9 @@ async function load() {
   if (manifest.audio) {
     audioEl = new Audio('./' + manifest.audio);
     audioEl.loop = true;
+    updateSound();
   }
+  if (!manifest.audio && soundEl) soundEl.style.display = 'none';
 
   // HEAD: fetch individually (parallel), add in index order; frame 0 → start immediately
   loadLabel.textContent = 'Loading…';
@@ -237,14 +245,24 @@ async function load() {
   setBar(1, total);
   for (let i = 1; i < head; i++) { addFrame(await headBufs[i]); setBar(i + 1, total); }
 
-  // TAIL: one zip in the background; append in order as the loop keeps playing the head
+  // TAIL: individual progressive batches (manifest.tailMode 'individual') OR one rest.zip (default).
   if (total > head) {
-    const restBuf = await fetch('./rest.zip').then(r => { if (!r.ok) throw new Error('rest.zip ' + r.status); return r.arrayBuffer(); });
-    const zip = await JSZip.loadAsync(restBuf);
-    const names = Object.keys(zip.files).filter(f => f.toLowerCase().endsWith('.spz')).sort();
-    for (let i = 0; i < names.length; i++) {
-      addFrame(await zip.file(names[i]).async('uint8array'));
-      setBar(head + i + 1, total);
+    if (manifest.tailMode === 'individual') {
+      const BATCH = 8;   // bounded concurrency — never fire all N tail requests at once
+      for (let i = head; i < total; i += BATCH) {
+        const end = Math.min(i + BATCH, total);
+        const bufs = [];
+        for (let j = i; j < end; j++) bufs.push(fetch(`./frames/frame_${pad4(j)}.spz`).then(r => r.arrayBuffer()));
+        for (let j = i; j < end; j++) { addFrame(await bufs[j - i]); setBar(j + 1, total); }
+      }
+    } else {
+      const restBuf = await fetch('./rest.zip').then(r => { if (!r.ok) throw new Error('rest.zip ' + r.status); return r.arrayBuffer(); });
+      const zip = await JSZip.loadAsync(restBuf);
+      const names = Object.keys(zip.files).filter(f => f.toLowerCase().endsWith('.spz')).sort();
+      for (let i = 0; i < names.length; i++) {
+        addFrame(await zip.file(names[i]).async('uint8array'));
+        setBar(head + i + 1, total);
+      }
     }
   }
 }
