@@ -268,8 +268,12 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             // across every exported object (post-bake), for the player's scale-normalized reveal.
             const sceneRadius = exportMaxL2 > 0 ? Math.round(Math.sqrt(exportMaxL2) * 10000) / 10000 : 0;
             zip.file('manifest.json', JSON.stringify({
-                version: 2, name, audio: audioName, objects: manifestObjects,
-                ...(sceneRadius > 0 ? { sceneRadius } : {}), ...(camera ? { camera } : {})
+                version: 2,
+                name,
+                audio: audioName,
+                objects: manifestObjects,
+                ...(sceneRadius > 0 ? { sceneRadius } : {}),
+                ...(camera ? { camera } : {})
             }));
 
             // 5. generate + download
