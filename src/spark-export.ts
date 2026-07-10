@@ -6,6 +6,7 @@ import { Events } from './events';
 import { Scene } from './scene';
 import { SingleSplat } from './splat-serialize';
 import { State } from './splat-state';
+import { SparkExportDialog } from './ui/spark-export-dialog';
 
 // "Export Spark Player" — package the WHOLE scene (every visible static splat + every FlexAvatar
 // atlas avatar, editor transforms baked in) as a self-contained, offline, progressive-loading Spark
@@ -129,6 +130,16 @@ const staticToSpz = async (splat: any): Promise<{ spz: Uint8Array, n: number }> 
 };
 
 const registerSparkExport = (events: Events, scene: Scene) => {
+    // options dialog, created on first export (self-attached: editor.ts stays untouched)
+    let dialog: SparkExportDialog | null = null;
+    const showDialog = (hasCameraPath: boolean) => {
+        if (!dialog) {
+            dialog = new SparkExportDialog();
+            (document.getElementById('top-container') ?? document.body).appendChild(dialog.dom);
+        }
+        return dialog.show(hasCameraPath);
+    };
+
     events.function('sparkExport', async () => {
         // collect visible splats in scene order and partition: atlas avatars (animated), sog4d
         // dynamics (skipped in v1), everything else exports as a static
@@ -155,6 +166,20 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             });
             return;
         }
+
+        // camera keyframe path (SuperSplat poseSets, set 0) — same rules the editor's flythrough
+        // uses. Collected BEFORE the options dialog so the dialog can disable its camera-path
+        // select when the timeline has fewer than 2 valid poses.
+        const poseSets = (events.invoke('docSerialize.poseSets') ?? []) as any[];
+        const duration = (events.invoke('timeline.frames') as number) || 0;
+        const camPoses = ((poseSets[0]?.poses ?? []) as any[])
+        .filter(p => p.frame < duration)
+        .sort((a, b) => a.frame - b.frame)
+        .map(p => ({ frame: p.frame, position: p.position, target: p.target }));
+
+        // export options dialog (camera mode / entrance effect / duration); Cancel → no export
+        const options = await showDialog(camPoses.length >= 2);
+        if (!options) return;
 
         // scene name = the FIRST exported object's sanitized name
         const name = sanitize(exportables[0].name);
@@ -250,14 +275,9 @@ const registerSparkExport = (events: Events, scene: Scene) => {
                 }
             }
 
-            // camera keyframe path (SuperSplat poseSets, set 0) — same rules the editor's flythrough uses
-            const poseSets = (events.invoke('docSerialize.poseSets') ?? []) as any[];
-            const duration = (events.invoke('timeline.frames') as number) || 0;
-            const camPoses = ((poseSets[0]?.poses ?? []) as any[])
-            .filter(p => p.frame < duration)
-            .sort((a, b) => a.frame - b.frame)
-            .map(p => ({ frame: p.frame, position: p.position, target: p.target }));
-            const camera = camPoses.length >= 2 ? {
+            // camera block: needs >= 2 poses AND the dialog's consent ("Don't include" drops it,
+            // along with the manifest.player.camera block below)
+            const camera = (camPoses.length >= 2 && options.cameraMode !== 'off') ? {
                 frames: duration,
                 fps: (events.invoke('timeline.frameRate') as number) || 30,
                 smoothness: (events.invoke('timeline.smoothness') as number) ?? 1,
@@ -267,11 +287,19 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             // 4. manifest (v2 — scene manifest). sceneRadius = max splat distance from the Y axis
             // across every exported object (post-bake), for the player's scale-normalized reveal.
             const sceneRadius = exportMaxL2 > 0 ? Math.round(Math.sqrt(exportMaxL2) * 10000) / 10000 : 0;
+            // player defaults from the options dialog (player-side precedence:
+            // URL param > manifest.player > built-in default). player.camera is present ONLY
+            // when a camera path is exported; "None" writes effect 'off' (sec kept, harmless).
+            const playerDefaults = {
+                reveal: { effect: options.revealEffect, sec: options.revealSec },
+                ...(camera ? { camera: { autoplay: options.cameraMode === 'auto' } } : {})
+            };
             zip.file('manifest.json', JSON.stringify({
                 version: 2,
                 name,
                 audio: audioName,
                 objects: manifestObjects,
+                player: playerDefaults,
                 ...(sceneRadius > 0 ? { sceneRadius } : {}),
                 ...(camera ? { camera } : {})
             }));
