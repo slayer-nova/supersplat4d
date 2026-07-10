@@ -12,7 +12,7 @@
 // audio-owning object drives its frame index from the soundtrack so A/V stay in sync.
 
 import * as THREE from 'three';
-import { SparkRenderer, SplatMesh, SparkControls, textSplats } from '@sparkjsdev/spark';
+import { SparkRenderer, SplatMesh, SparkControls, textSplats, dyno } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import JSZip from 'jszip';
 
@@ -335,6 +335,87 @@ const addFrameTo = (o, u8) => {
   m.visible = (o.meshes.length === 0);
   group.add(m);
   o.meshes.push(m);
+  revealAdd(m);
+};
+
+// ✨ splat-REVEAL entrance — "Spread" effect ported verbatim from the official sparkjs.dev
+// "Splat Reveal Effects" example (effectType == 2 branch): a per-gsplat objectModifier
+// (dyno shader graph) driven by one shared time uniform makes the scene emerge radially —
+// splats scale up from nothing and fade from flat grey to true color, outward from the axis.
+// It plays RIGHT AFTER the loading bar completes (covers the visual pop-in), for ~2.2 s, then
+// the modifier is REMOVED (objectModifier = undefined + updateGenerator) so steady-state
+// rendering returns to the exact zero-cost pipeline. Meshes are collected while loading;
+// anything that streams in during the reveal window joins it, anything later never gets the
+// modifier. Orthogonal to the frame-swap .visible cycling (head meshes keep cycling — fine).
+// ?reveal=off disables entirely; a dyno failure must never break playback.
+const revealEnabled = new URLSearchParams(location.search).get('reveal') !== 'off';
+const REVEAL_MS = 2200;     // user-approved ~2-2.5 s entrance
+// Example-time at reveal end. The Spread math saturates as tt = t*t*.4+.5 grows: centers are
+// exact from tt >= 14, scales/colors from tt >= 8+2.5*l (l = splat distance from the local Y
+// axis). t = 7 → tt ≈ 20 → everything within l ≈ 4.8 u is at identity when the modifier is
+// removed, so the removal is invisible for our ~0.5 u heads + room-scale statics.
+const REVEAL_T_END = 7.0;
+let revealT = null;         // shared dyno float uniform (example's animateT)
+let revealModifier = null;  // one dynoBlock shared by every mesh → compiled-generator cache hit
+let revealMeshes = [];      // meshes carrying the modifier during the reveal window
+let revealActive = false;
+let revealDone = !revealEnabled;  // done → stop collecting, never attach again
+let revealStartMs = 0;
+
+const makeRevealModifier = () => {
+  if (revealModifier) return true;
+  try {
+    revealT = dyno.dynoFloat(0);
+    const spread = new dyno.Dyno({
+      inTypes: { gsplat: dyno.Gsplat, t: 'float' },
+      outTypes: { gsplat: dyno.Gsplat },
+      // Spread: gentle radial emergence with scaling — verbatim from the official example
+      statements: ({ inputs, outputs }) => dyno.unindentLines(`
+        ${outputs.gsplat} = ${inputs.gsplat};
+        float t = ${inputs.t};
+        vec3 scales = ${inputs.gsplat}.scales;
+        vec3 localPos = ${inputs.gsplat}.center;
+        float l = length(localPos.xz);
+        float tt = t*t*.4+.5;
+        localPos.xz *= min(1.,.3+max(0.,tt*.05));
+        ${outputs.gsplat}.center = localPos;
+        ${outputs.gsplat}.scales = max(mix(vec3(0.0),scales,min(tt-7.-l*2.5,1.)),mix(vec3(0.0),scales*.2,min(tt-1.-l*2.,1.)));
+        ${outputs.gsplat}.rgba = mix(vec4(.3),${inputs.gsplat}.rgba,clamp(tt-l*2.5-3.,0.,1.));
+      `)
+    });
+    revealModifier = dyno.dynoBlock(
+      { gsplat: dyno.Gsplat },
+      { gsplat: dyno.Gsplat },
+      ({ gsplat }) => ({ gsplat: spread.apply({ gsplat, t: revealT }).gsplat })
+    );
+    return true;
+  } catch (e) {
+    console.warn('splat reveal skipped', e);
+    revealModifier = null; revealDone = true; revealMeshes = [];
+    return false;
+  }
+};
+
+// collect every content mesh (statics + frame meshes) as it is created; late arrivals during
+// an active reveal get the modifier immediately so they don't pop in fully-formed mid-reveal
+const revealAdd = (m) => {
+  if (revealDone) return;
+  revealMeshes.push(m);
+  if (revealActive) { m.objectModifier = revealModifier; m.updateGenerator(); }
+};
+
+const startReveal = () => {
+  if (revealDone || !makeRevealModifier()) return;
+  for (const m of revealMeshes) { m.objectModifier = revealModifier; m.updateGenerator(); }
+  revealActive = true;
+  revealStartMs = performance.now();
+};
+
+const endReveal = () => {
+  revealActive = false;
+  revealDone = true;
+  for (const m of revealMeshes) { m.objectModifier = undefined; m.updateGenerator(); } // back to the unmodified pipeline
+  revealMeshes = [];
 };
 
 // 🏷 VR-visible watermark — the DOM overlay (watermark/buttons) does not exist inside a headset,
@@ -363,6 +444,7 @@ const startPlayback = () => {
   if (started) return;
   started = true;
   addWatermark();
+  startReveal();   // ✨ entrance reveal starts the moment the loading gate opens (covers pop-in)
   playStartMs = performance.now();
   loadEl.style.opacity = '0';
   setTimeout(() => { loadEl.style.display = 'none'; }, 600);
@@ -379,6 +461,14 @@ const startPlayback = () => {
         o.meshes[o.idx].visible = true;
         o.last = t;
       }
+    }
+    // ✨ entrance reveal — advance the shared time uniform, version-bump each modified mesh so
+    // Spark re-runs its generator (official example ticks animateT + updateVersion() per frame)
+    if (revealActive) {
+      const p = Math.min(Math.max((t - revealStartMs) / REVEAL_MS, 0), 1);
+      revealT.value = p * REVEAL_T_END;
+      for (const m of revealMeshes) m.updateVersion();
+      if (p >= 1) endReveal();
     }
     // camera flythrough — pose from the spline on the shared scene clock (never in XR: headset owns the camera)
     if (camPathActive && camSpline && !renderer.xr.isPresenting) {
@@ -559,6 +649,7 @@ async function loadScene(manifest) {
     const buf = await fetch('./' + o.src).then((r) => { if (!r.ok) throw new Error(o.src + ' ' + r.status); return r.arrayBuffer(); });
     const m = new SplatMesh({ fileBytes: new Uint8Array(buf), fileType: 'spz' });
     group.add(m);
+    revealAdd(m);
     await m.initialized;
     bump();
   }
