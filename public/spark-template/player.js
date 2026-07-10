@@ -349,7 +349,17 @@ const REVEAL_MS = (() => {
 // axis). t = 7 → tt ≈ 20 → everything within l ≈ 4.8 u is at identity when the modifier is
 // removed, so the removal is invisible for our ~0.5 u heads + room-scale statics.
 const REVEAL_T_END = 7.0;
+// The official Spread is tuned for VALLEY-scale content: its wave terms (tt - l*2.5 etc.) use the
+// splat's ABSOLUTE distance l from the local Y axis, and saturate around l ≈ 4.8 world units. On a
+// ~0.3 u FLEX head every splat shares nearly the same phase → the "spread" collapses into a uniform
+// fade (user report: looks nothing like the example). Fix: normalize l to the scene's xz-radius —
+// k = 4.8 / sceneRadius — so the wave sweeps the whole scene over the animation regardless of
+// scale. sceneRadius comes from manifest.sceneRadius (written by the exporter); fallback 0.35
+// (head-scale) for older packages. A valley-sized scene (R≈4.8) gets k≈1 = the official look.
+const REVEAL_L_REF = 4.8;
+let revealSceneRadius = 0.35;  // set from manifest in load()
 let revealT = null;         // shared dyno float uniform (example's animateT)
+let revealK = null;         // shared dyno float uniform — l normalization factor
 let revealModifier = null;  // one dynoBlock shared by every mesh → compiled-generator cache hit
 let revealMeshes = [];      // meshes carrying the modifier during the reveal window
 let revealActive = false;
@@ -360,16 +370,18 @@ const makeRevealModifier = () => {
   if (revealModifier) return true;
   try {
     revealT = dyno.dynoFloat(0);
+    revealK = dyno.dynoFloat(1);
     const spread = new dyno.Dyno({
-      inTypes: { gsplat: dyno.Gsplat, t: 'float' },
+      inTypes: { gsplat: dyno.Gsplat, t: 'float', k: 'float' },
       outTypes: { gsplat: dyno.Gsplat },
-      // Spread: gentle radial emergence with scaling — verbatim from the official example
+      // Spread: gentle radial emergence with scaling — official example math, with l normalized
+      // by k (scene-scale factor) so the wave phase spans the scene like it does on the demo valley
       statements: ({ inputs, outputs }) => dyno.unindentLines(`
         ${outputs.gsplat} = ${inputs.gsplat};
         float t = ${inputs.t};
         vec3 scales = ${inputs.gsplat}.scales;
         vec3 localPos = ${inputs.gsplat}.center;
-        float l = length(localPos.xz);
+        float l = length(localPos.xz) * ${inputs.k};
         float tt = t*t*.4+.5;
         localPos.xz *= min(1.,.3+max(0.,tt*.05));
         ${outputs.gsplat}.center = localPos;
@@ -380,7 +392,7 @@ const makeRevealModifier = () => {
     revealModifier = dyno.dynoBlock(
       { gsplat: dyno.Gsplat },
       { gsplat: dyno.Gsplat },
-      ({ gsplat }) => ({ gsplat: spread.apply({ gsplat, t: revealT }).gsplat })
+      ({ gsplat }) => ({ gsplat: spread.apply({ gsplat, t: revealT, k: revealK }).gsplat })
     );
     return true;
   } catch (e) {
@@ -400,6 +412,7 @@ const revealAdd = (m) => {
 
 const startReveal = () => {
   if (revealDone || !makeRevealModifier()) return;
+  revealK.value = REVEAL_L_REF / Math.max(revealSceneRadius, 0.05);   // scene-scale normalization
   for (const m of revealMeshes) { m.objectModifier = revealModifier; m.updateGenerator(); }
   revealActive = true;
   revealStartMs = performance.now();
@@ -570,6 +583,7 @@ async function load() {
     return r.json();
   });
   setupCameraPath(manifest);           // v1 AND v2 — manifest.camera is version-independent
+  if (manifest.sceneRadius > 0) revealSceneRadius = manifest.sceneRadius;   // reveal scale (exporter-written)
   if (manifest.version === 2) return loadScene(manifest);
 
   // v1 (single avatar, progressive: head individual → tail zip) — exactly one animObject; frame 0

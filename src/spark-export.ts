@@ -41,6 +41,10 @@ const isIdentityMat = (m: Mat4): boolean => {
 const bakeV = new Vec3();
 const bakeQ = new Quat();
 
+// Scene xz-radius accumulator (squared), reset per export. Written to manifest.sceneRadius so the
+// player can normalize the Spread reveal's absolute-unit wave to the scene's actual scale.
+let exportMaxL2 = 0;
+
 // GSplatData -> spz-js GaussianCloud. deserializeFromSSplat (loaders/splat.ts) already stores the
 // PLY-native conventions spz-js expects: scale_*=LOG, f_dc_*=SH-DC, opacity=LOGIT, rot_*=(w,x,y,z).
 // So this is a direct field copy; the only transforms are the optional world-transform bake and
@@ -74,6 +78,8 @@ const gsplatToSpz = (gd: GSplatData, bake: Bake | null = null): Promise<Uint8Arr
             sy = Math.log(Math.exp(sy) * bake.scale.y);
             sz = Math.log(Math.exp(sz) * bake.scale.z);
         }
+        const l2a = px * px + pz * pz;
+        if (l2a > exportMaxL2) exportMaxL2 = l2a;
         positions[i * 3] = px; positions[i * 3 + 1] = py; positions[i * 3 + 2] = pz;
         scales[i * 3] = sx; scales[i * 3 + 1] = sy; scales[i * 3 + 2] = sz;
         colors[i * 3] = f0[i]; colors[i * 3 + 1] = f1[i]; colors[i * 3 + 2] = f2[i];
@@ -107,6 +113,8 @@ const staticToSpz = async (splat: any): Promise<{ spz: Uint8Array, n: number }> 
         if (state && (state[i] & State.deleted) !== 0) continue;
         single.read(splat, i);
         const d = single.data;
+        const l2s = d.x * d.x + d.z * d.z;
+        if (l2s > exportMaxL2) exportMaxL2 = l2s;
         positions[k * 3] = d.x; positions[k * 3 + 1] = d.y; positions[k * 3 + 2] = d.z;
         scales[k * 3] = d.scale_0; scales[k * 3 + 1] = d.scale_1; scales[k * 3 + 2] = d.scale_2;
         colors[k * 3] = d.f_dc_0; colors[k * 3 + 1] = d.f_dc_1; colors[k * 3 + 2] = d.f_dc_2;
@@ -124,6 +132,7 @@ const registerSparkExport = (events: Events, scene: Scene) => {
     events.function('sparkExport', async () => {
         // collect visible splats in scene order and partition: atlas avatars (animated), sog4d
         // dynamics (skipped in v1), everything else exports as a static
+        exportMaxL2 = 0;   // fresh scene-radius accumulation per export
         const splats = scene.getElementsByType(ElementType.splat) as any[];
         const exportables: any[] = [];
         const dynamicNames: string[] = [];
@@ -255,9 +264,12 @@ const registerSparkExport = (events: Events, scene: Scene) => {
                 poses: camPoses
             } : null;
 
-            // 4. manifest (v2 — scene manifest)
+            // 4. manifest (v2 — scene manifest). sceneRadius = max splat distance from the Y axis
+            // across every exported object (post-bake), for the player's scale-normalized reveal.
+            const sceneRadius = exportMaxL2 > 0 ? Math.round(Math.sqrt(exportMaxL2) * 10000) / 10000 : 0;
             zip.file('manifest.json', JSON.stringify({
-                version: 2, name, audio: audioName, objects: manifestObjects, ...(camera ? { camera } : {})
+                version: 2, name, audio: audioName, objects: manifestObjects,
+                ...(sceneRadius > 0 ? { sceneRadius } : {}), ...(camera ? { camera } : {})
             }));
 
             // 5. generate + download
