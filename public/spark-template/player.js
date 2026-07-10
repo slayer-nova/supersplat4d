@@ -16,6 +16,137 @@ import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import JSZip from 'jszip';
 
+// ---- CubicSpline — verbatim port of the editor's src/anim/spline.ts (TS types stripped) ----
+class CubicSpline {
+    // control times
+    times;
+
+    // control data: in-tangent, point, out-tangent
+    knots;
+
+    // dimension of the knot points
+    dim;
+
+    constructor(times, knots) {
+        this.times = times;
+        this.knots = knots;
+        this.dim = knots.length / times.length / 3;
+    }
+
+    evaluate(time, result) {
+        const { times } = this;
+        const last = times.length - 1;
+
+        if (time <= times[0]) {
+            this.getKnot(0, result);
+        } else if (time >= times[last]) {
+            this.getKnot(last, result);
+        } else {
+            let seg = 0;
+            while (time >= times[seg + 1]) {
+                seg++;
+            }
+            this.evaluateSegment(seg, (time - times[seg]) / (times[seg + 1] - times[seg]), result);
+        }
+    }
+
+    getKnot(index, result) {
+        const { knots, dim } = this;
+        const idx = index * 3 * dim;
+        for (let i = 0; i < dim; ++i) {
+            result[i] = knots[idx + i * 3 + 1];
+        }
+    }
+
+    // evaluate the spline segment at the given normalized time t
+    evaluateSegment(segment, t, result) {
+        const { knots, dim } = this;
+
+        const t2 = t * t;
+        const twot = t + t;
+        const omt = 1 - t;
+        const omt2 = omt * omt;
+
+        let idx = segment * dim * 3;                    // each knot has 3 values: tangent in, value, tangent out
+        for (let i = 0; i < dim; ++i) {
+            const p0 = knots[idx + 1];                  // p0
+            const m0 = knots[idx + 2];                  // outgoing tangent
+            const m1 = knots[idx + dim * 3];            // incoming tangent
+            const p1 = knots[idx + dim * 3 + 1];        // p1
+            idx += 3;
+
+            result[i] =
+                p0 * ((1 + twot) * omt2) +
+                m0 * (t * omt2) +
+                p1 * (t2 * (3 - twot)) +
+                m1 * (t2 * (t - 1));
+        }
+    }
+
+    // calculate cubic spline knots from points
+    // times: time values for each control point
+    // points: control point values to be interpolated (n dimensional)
+    // smoothness: 0 = linear, 1 = smooth
+    static calcKnots(times, points, smoothness) {
+        const n = times.length;
+        const dim = points.length / n;
+        const knots = new Array(n * dim * 3);
+
+        for (let i = 0; i < n; i++) {
+            const t = times[i];
+
+            for (let j = 0; j < dim; j++) {
+                const idx = i * dim + j;
+                const p = points[idx];
+
+                let tangent;
+                if (i === 0) {
+                    tangent = (points[idx + dim] - p) / (times[i + 1] - t);
+                } else if (i === n - 1) {
+                    tangent = (p - points[idx - dim]) / (t - times[i - 1]);
+                } else {
+                    tangent = (points[idx + dim] - points[idx - dim]) / (times[i + 1] - times[i - 1]);
+                }
+
+                // convert to derivatives w.r.t normalized segment parameter
+                const inScale = i > 0 ? (times[i] - times[i - 1]) : (times[1] - times[0]);
+                const outScale = i < n - 1 ? (times[i + 1] - times[i]) : (times[i] - times[i - 1]);
+
+                knots[idx * 3] = tangent * inScale * smoothness;
+                knots[idx * 3 + 1] = p;
+                knots[idx * 3 + 2] = tangent * outScale * smoothness;
+            }
+        }
+
+        return knots;
+    }
+
+    static fromPoints(times, points, smoothness = 1) {
+        return new CubicSpline(times, CubicSpline.calcKnots(times, points, smoothness));
+    }
+
+    // create a looping spline by duplicating animation points at the end and beginning
+    static fromPointsLooping(length, times, points, smoothness = 1) {
+        if (times.length < 2) {
+            return CubicSpline.fromPoints(times, points);
+        }
+
+        const dim = points.length / times.length;
+        const newTimes = times.slice();
+        const newPoints = points.slice();
+
+        // append first two points
+        newTimes.push(length + times[0], length + times[1]);
+        newPoints.push(...points.slice(0, dim * 2));
+
+        // prepend last two points
+        newTimes.splice(0, 0, times[times.length - 2] - length, times[times.length - 1] - length);
+        newPoints.splice(0, 0, ...points.slice(points.length - dim * 2));
+
+        return CubicSpline.fromPoints(newTimes, newPoints, smoothness);
+    }
+}
+
 const viewer = document.getElementById('viewer');
 const loadEl = document.getElementById('load');
 const loadLabel = document.getElementById('load-label');
@@ -153,6 +284,7 @@ const updateTwoHand = () => {
 };
 
 renderer.xr.addEventListener('sessionstart', () => {
+  if (camPathActive) setCamPath(false); // headset owns the camera; not auto-re-enabled on sessionend
   const ar = isPassthrough();
   scene.background = ar ? null : DARK;   // transparent → passthrough shows through
   renderer.setClearAlpha(ar ? 0 : 1);
@@ -181,6 +313,10 @@ const animObjects = [];     // { meshes: [], idx: 0, last: 0, fps, total, hasAud
 let started = false;
 let audioEl = null;
 
+// camera flythrough (manifest.camera) — spline path replayed on the shared scene clock
+let camSpline = null, camData = null, camPathActive = false, camOut = new Array(6);
+let playStartMs = 0;   // set in startPlayback()
+
 const addFrameTo = (o, u8) => {
   const m = new SplatMesh({ fileBytes: u8, fileType: 'spz' });
   m.visible = (o.meshes.length === 0);
@@ -191,6 +327,7 @@ const addFrameTo = (o, u8) => {
 const startPlayback = () => {
   if (started) return;
   started = true;
+  playStartMs = performance.now();
   loadEl.style.opacity = '0';
   setTimeout(() => { loadEl.style.display = 'none'; }, 600);
   if (audioEl) audioEl.play().catch(() => { audioEl.muted = true; updateSound(); }); // autoplay blocked → start muted, toggle unmutes
@@ -207,8 +344,20 @@ const startPlayback = () => {
         o.last = t;
       }
     }
+    // camera flythrough — pose from the spline on the shared scene clock (never in XR: headset owns the camera)
+    if (camPathActive && camSpline && !renderer.xr.isPresenting) {
+      let sec;
+      const audioOwner = animObjects.find((o) => o.hasAudio);
+      if (audioOwner && audioEl && !audioEl.paused && audioEl.duration) sec = audioEl.currentTime;
+      else sec = (t - playStartMs) / 1000;
+      const fr = ((sec * camData.fps) % camData.frames + camData.frames) % camData.frames;
+      camSpline.evaluate(fr, camOut);
+      camera.position.set(camOut[0], camOut[1], camOut[2]);
+      controls.target.set(camOut[3], camOut[4], camOut[5]);
+      camera.lookAt(controls.target);
+    }
     if (renderer.xr.isPresenting) { pollReset(); updateTwoHand(); } // grab/scale + reset in XR
-    else controls.update();                                         // headset owns the camera in XR
+    else if (!camPathActive) controls.update();                     // headset owns the camera in XR; OrbitControls.update() ignores 'enabled' + clamps radius → skip while the path owns the camera
     renderer.render(scene, camera);
   });
 };
@@ -221,6 +370,34 @@ soundEl.addEventListener('click', () => {
   updateSound();
 });
 
+// 🎥 camera flythrough toggle + handoff — any pointer/wheel on the canvas hands the camera back to
+// the user (known v1 UX: the FIRST press only stops the flythrough; the NEXT drag orbits).
+// NOTE: lives after the OrbitControls/renderer construction on purpose — it touches both at module eval.
+const camBtn = document.getElementById('campath');
+const updateCamBtn = () => { if (camBtn) camBtn.style.opacity = camPathActive ? '1' : '0.4'; };
+const setCamPath = (on) => {
+  camPathActive = on && !!camSpline;
+  controls.enabled = !camPathActive;
+  updateCamBtn();
+};
+if (camBtn) camBtn.addEventListener('click', () => setCamPath(!camPathActive));
+renderer.domElement.addEventListener('pointerdown', () => { if (camPathActive) setCamPath(false); });
+renderer.domElement.addEventListener('wheel', () => { if (camPathActive) setCamPath(false); }, { passive: true });
+
+// build the spline from manifest.camera (version-independent; absent/malformed → zero behavior change)
+const setupCameraPath = (manifest) => {
+  const cam = manifest && manifest.camera;
+  if (!cam || !Array.isArray(cam.poses) || cam.poses.length < 2 || !(cam.frames > 0)) return;
+  const times = cam.poses.map((p) => p.frame);
+  const points = [];
+  cam.poses.forEach((p) => { points.push(p.position[0], p.position[1], p.position[2], p.target[0], p.target[1], p.target[2]); });
+  camSpline = CubicSpline.fromPointsLooping(cam.frames, times, points, cam.smoothness ?? 1);
+  camData = cam;
+  camPathActive = true;               // default ON when a path ships (showcase-first)
+  controls.enabled = false;
+  if (camBtn) { camBtn.style.display = 'block'; updateCamBtn(); }
+};
+
 const pad4 = (i) => String(i).padStart(4, '0');
 const setBar = (n, total) => { loadBar.style.width = (n / total * 100).toFixed(1) + '%'; };
 
@@ -230,6 +407,7 @@ async function load() {
     if (!r.ok) throw new Error('manifest ' + r.status);
     return r.json();
   });
+  setupCameraPath(manifest);           // v1 AND v2 — manifest.camera is version-independent
   if (manifest.version === 2) return loadScene(manifest);
 
   // v1 (single avatar, progressive: head individual → tail zip) — exactly one animObject; frame 0
