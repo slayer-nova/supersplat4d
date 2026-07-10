@@ -339,7 +339,11 @@ const addFrameTo = (o, u8) => {
 // modifier. Orthogonal to the frame-swap .visible cycling (head meshes keep cycling — fine).
 // ?reveal=off disables entirely; a dyno failure must never break playback.
 const revealEnabled = new URLSearchParams(location.search).get('reveal') !== 'off';
-const REVEAL_MS = 2200;     // user-approved ~2-2.5 s entrance
+// Default 4.5 s (user feedback: 2.2 s felt too fast). Override: ?revealsec=6 → 6 s (clamped 0.5–20).
+const REVEAL_MS = (() => {
+  const s = parseFloat(new URLSearchParams(location.search).get('revealsec'));
+  return Number.isFinite(s) ? Math.min(20, Math.max(0.5, s)) * 1000 : 4500;
+})();
 // Example-time at reveal end. The Spread math saturates as tt = t*t*.4+.5 grows: centers are
 // exact from tt >= 14, scales/colors from tt >= 8+2.5*l (l = splat distance from the local Y
 // axis). t = 7 → tt ≈ 20 → everything within l ≈ 4.8 u is at identity when the modifier is
