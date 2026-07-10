@@ -12,7 +12,7 @@
 // audio-owning object drives its frame index from the soundtrack so A/V stay in sync.
 
 import * as THREE from 'three';
-import { SparkRenderer, SplatMesh, SparkControls } from '@sparkjsdev/spark';
+import { SparkRenderer, SplatMesh, SparkControls, textSplats } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import JSZip from 'jszip';
 
@@ -327,9 +327,32 @@ const addFrameTo = (o, u8) => {
   o.meshes.push(m);
 };
 
+// 🏷 VR-visible watermark — the DOM overlay (watermark/buttons) does not exist inside a headset,
+// so brand the scene itself: a small splat-text line via the bundle's textSplats(), parented under
+// the root group so XR grab/recenter/scale carry it with the scene. textSplats renders the string
+// to a canvas and emits one splat per opaque pixel, centered at the local origin in the z=0 plane
+// (already facing +Z); objectScale converts canvas px → world units. Added exactly once, when
+// playback first starts (i.e. after the first object loads). A failure must never break playback.
+const addWatermark = () => {
+  try {
+    const wm = textSplats({
+      text: 'SHOOTING LAB · SLFPV.COM',
+      font: 'Arial',
+      fontSize: 32,                               // canvas px; world size comes from objectScale
+      color: new THREE.Color(0.4, 0.4, 0.4),      // dim grey (~40% white) — legible, not shouting
+      objectScale: 0.0012                         // ~23 px cap height → ~0.028 world height
+    });
+    wm.position.set(0, -0.42, 0);                 // below the avatar, inside the root group
+    group.add(wm);
+  } catch (e) {
+    console.warn('splat watermark skipped', e);
+  }
+};
+
 const startPlayback = () => {
   if (started) return;
   started = true;
+  addWatermark();
   playStartMs = performance.now();
   loadEl.style.opacity = '0';
   setTimeout(() => { loadEl.style.display = 'none'; }, 600);
