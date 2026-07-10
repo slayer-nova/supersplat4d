@@ -1,10 +1,15 @@
-// FlexAvatar · Spark player — self-contained, offline, progressive 3DGS talking-head playback.
+// FlexAvatar · Spark player — self-contained, offline, progressive 3DGS playback.
 //
-// Loads a package produced by the SuperSplat editor's "Export Spark Player" (see DESIGN.md):
-//   manifest.json + frames/frame_%04d.spz (HEAD, individual) + rest.zip (TAIL) + audio.m4a
-// The HEAD frames stream in individually so frame 0 shows in ~50 ms and playback starts at once; the
-// TAIL arrives as one zip in the background and the loop expands to the full clip. One SplatMesh per
-// frame, cycled by visibility at the bake fps; audio drives the frame index so A/V stay in sync.
+// Loads a package produced by the SuperSplat editor's "Export Spark Player" (see DESIGN.md).
+// Two package layouts, dispatched on manifest.json "version":
+//   v1 (no version) — single avatar: frames/frame_%04d.spz (HEAD, individual) + rest.zip (TAIL)
+//     + audio.m4a. Frame 0 shows in ~50 ms and playback starts at once; the TAIL arrives in the
+//     background and the loop expands to the full clip.
+//   v2 (version: 2) — whole scene: objects/<id>.spz statics + objects/<id>/{frames/,rest.zip}
+//     animated objects, transforms baked at export so everything loads at identity into one root
+//     group. Playback starts after statics + all HEAD frames; TAILs then stream per object.
+// One SplatMesh per frame per animated object, cycled by visibility at that object's fps; the
+// audio-owning object drives its frame index from the soundtrack so A/V stay in sync.
 
 import * as THREE from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
@@ -171,17 +176,16 @@ addEventListener('resize', () => {
 });
 
 // ---- playback state ------------------------------------------------------
-const frames = [];          // dense, in order; one SplatMesh per frame
-let fps = 30, started = false, frameIndex = 0, lastSwap = 0;
+// One struct per animated object; a v1 package constructs exactly ONE so its behavior is unchanged.
+const animObjects = [];     // { meshes: [], idx: 0, last: 0, fps, total, hasAudio }
+let started = false;
 let audioEl = null;
 
-const addFrame = (bytes) => {
-  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const mesh = new SplatMesh({ fileBytes: u8, fileType: 'spz' });
-  mesh.visible = (frames.length === 0);
-  group.add(mesh);
-  frames.push(mesh);
-  return mesh;
+const addFrameTo = (o, u8) => {
+  const m = new SplatMesh({ fileBytes: u8, fileType: 'spz' });
+  m.visible = (o.meshes.length === 0);
+  group.add(m);
+  o.meshes.push(m);
 };
 
 const startPlayback = () => {
@@ -191,15 +195,17 @@ const startPlayback = () => {
   setTimeout(() => { loadEl.style.display = 'none'; }, 600);
   if (audioEl) audioEl.play().catch(() => { audioEl.muted = true; updateSound(); }); // autoplay blocked → start muted, toggle unmutes
   renderer.setAnimationLoop((t) => {
-    if (frames.length > 1 && (t - lastSwap) > (1000 / fps)) {
-      frames[frameIndex].visible = false;
-      if (audioEl && !audioEl.paused && audioEl.duration) {
-        frameIndex = Math.floor(audioEl.currentTime * fps) % frames.length;
-      } else {
-        frameIndex = (frameIndex + 1) % frames.length;
+    for (const o of animObjects) {
+      if (o.meshes.length > 1 && (t - o.last) > (1000 / o.fps)) {
+        o.meshes[o.idx].visible = false;
+        if (o.hasAudio && audioEl && !audioEl.paused && audioEl.duration) {
+          o.idx = Math.floor(audioEl.currentTime * o.fps) % o.meshes.length; // LOADED count — the tail may still be streaming
+        } else {
+          o.idx = (o.idx + 1) % o.meshes.length;
+        }
+        o.meshes[o.idx].visible = true;
+        o.last = t;
       }
-      frames[frameIndex].visible = true;
-      lastSwap = t;
     }
     if (renderer.xr.isPresenting) { pollReset(); updateTwoHand(); } // grab/scale + reset in XR
     else controls.update();                                         // headset owns the camera in XR
@@ -218,15 +224,20 @@ soundEl.addEventListener('click', () => {
 const pad4 = (i) => String(i).padStart(4, '0');
 const setBar = (n, total) => { loadBar.style.width = (n / total * 100).toFixed(1) + '%'; };
 
-// ---- load (progressive: head individual → tail zip) ----------------------
+// ---- load (dispatch on manifest version) ----------------------------------
 async function load() {
   const manifest = await fetch('./manifest.json').then(r => {
     if (!r.ok) throw new Error('manifest ' + r.status);
     return r.json();
   });
-  fps = manifest.fps || 30;
+  if (manifest.version === 2) return loadScene(manifest);
+
+  // v1 (single avatar, progressive: head individual → tail zip) — exactly one animObject; frame 0
+  // shows immediately and playback starts before the tail arrives, same as the pre-scene player.
   const total = manifest.frames;
   const head = Math.min(manifest.headCount || 1, total);
+  const o = { meshes: [], idx: 0, last: 0, fps: manifest.fps || 30, total, hasAudio: !!manifest.audio };
+  animObjects.push(o);
 
   // audio (top-level package file) — created now so it's ready when playback starts
   if (manifest.audio) {
@@ -240,10 +251,10 @@ async function load() {
   loadLabel.textContent = 'Loading…';
   const headBufs = [];
   for (let i = 0; i < head; i++) headBufs.push(fetch(`./frames/frame_${pad4(i)}.spz`).then(r => r.arrayBuffer()));
-  addFrame(await headBufs[0]);
+  addFrameTo(o, new Uint8Array(await headBufs[0]));
   startPlayback();
   setBar(1, total);
-  for (let i = 1; i < head; i++) { addFrame(await headBufs[i]); setBar(i + 1, total); }
+  for (let i = 1; i < head; i++) { addFrameTo(o, new Uint8Array(await headBufs[i])); setBar(i + 1, total); }
 
   // TAIL: individual progressive batches (manifest.tailMode 'individual') OR one rest.zip (default).
   if (total > head) {
@@ -253,17 +264,66 @@ async function load() {
         const end = Math.min(i + BATCH, total);
         const bufs = [];
         for (let j = i; j < end; j++) bufs.push(fetch(`./frames/frame_${pad4(j)}.spz`).then(r => r.arrayBuffer()));
-        for (let j = i; j < end; j++) { addFrame(await bufs[j - i]); setBar(j + 1, total); }
+        for (let j = i; j < end; j++) { addFrameTo(o, new Uint8Array(await bufs[j - i])); setBar(j + 1, total); }
       }
     } else {
       const restBuf = await fetch('./rest.zip').then(r => { if (!r.ok) throw new Error('rest.zip ' + r.status); return r.arrayBuffer(); });
       const zip = await JSZip.loadAsync(restBuf);
       const names = Object.keys(zip.files).filter(f => f.toLowerCase().endsWith('.spz')).sort();
       for (let i = 0; i < names.length; i++) {
-        addFrame(await zip.file(names[i]).async('uint8array'));
+        addFrameTo(o, await zip.file(names[i]).async('uint8array'));
         setBar(head + i + 1, total);
       }
     }
+  }
+}
+
+// v2 (scene manifest): statics + animated objects, all transform-baked at export → loaded at
+// identity into the shared root group (so XR grab/recenter move the whole scene). First paint is
+// after ALL statics + ALL HEAD frames (documented tradeoff vs v1's instant frame-0 start); TAILs
+// then stream in per object. Statics-only scenes are legal — the render loop just orbits them.
+async function loadScene(manifest) {
+  const objects = manifest.objects || [];
+  const statics = objects.filter((o) => o.type === 'static');
+  const anims = objects.filter((o) => o.type === 'animated');
+
+  if (manifest.audio) { audioEl = new Audio('./' + manifest.audio); audioEl.loop = true; updateSound(); }
+  if (!manifest.audio && soundEl) soundEl.style.display = 'none';
+
+  loadLabel.textContent = 'Loading…';
+  const totalUnits = statics.length + anims.reduce((s, o) => s + o.frames, 0);
+  let done = 0;
+  const bump = () => setBar(++done, totalUnits);
+
+  for (const o of statics) {
+    const buf = await fetch('./' + o.src).then((r) => { if (!r.ok) throw new Error(o.src + ' ' + r.status); return r.arrayBuffer(); });
+    const m = new SplatMesh({ fileBytes: new Uint8Array(buf), fileType: 'spz' });
+    group.add(m);
+    await m.initialized;
+    bump();
+  }
+
+  // HEADs: per object, fetch in parallel, add in index order (frame 0 of each object visible)
+  for (const o of anims) {
+    const st = { meshes: [], idx: 0, last: 0, fps: o.fps || 30, total: o.frames, hasAudio: !!o.audio };
+    animObjects.push(st);
+    const head = Math.min(o.headCount || 1, o.frames);
+    const bufs = [];
+    for (let i = 0; i < head; i++) bufs.push(fetch(`./${o.dir}/frames/frame_${pad4(i)}.spz`).then((r) => r.arrayBuffer()));
+    for (let i = 0; i < head; i++) { addFrameTo(st, new Uint8Array(await bufs[i])); bump(); }
+  }
+
+  startPlayback();          // v2 first paint = after statics + all HEADs (documented tradeoff)
+
+  // TAILs: one rest.zip per animated object, streamed in the background
+  for (let a = 0; a < anims.length; a++) {
+    const o = anims[a];
+    const st = animObjects[a];
+    if (o.frames <= (o.headCount || 1)) continue;
+    const restBuf = await fetch(`./${o.dir}/rest.zip`).then((r) => { if (!r.ok) throw new Error('rest.zip ' + r.status); return r.arrayBuffer(); });
+    const zip = await JSZip.loadAsync(restBuf);
+    const names = Object.keys(zip.files).filter((f) => f.toLowerCase().endsWith('.spz')).sort();
+    for (let i = 0; i < names.length; i++) { addFrameTo(st, await zip.file(names[i]).async('uint8array')); bump(); }
   }
 }
 
