@@ -12,7 +12,7 @@
 // audio-owning object drives its frame index from the soundtrack so A/V stay in sync.
 
 import * as THREE from 'three';
-import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+import { SparkRenderer, SplatMesh, SparkControls } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import JSZip from 'jszip';
 
@@ -285,6 +285,8 @@ const updateTwoHand = () => {
 
 renderer.xr.addEventListener('sessionstart', () => {
   if (camPathActive) setCamPath(false); // headset owns the camera; not auto-re-enabled on sessionend
+  if (flyActive) setFly(false);         // ditto for fly mode — back to Orbit for after the session
+  if (navBtn) navBtn.style.display = 'none'; // headset owns the camera → no fly toggle in XR
   const ar = isPassthrough();
   scene.background = ar ? null : DARK;   // transparent → passthrough shows through
   renderer.setClearAlpha(ar ? 0 : 1);
@@ -299,6 +301,7 @@ renderer.xr.addEventListener('sessionend', () => {
   group.position.set(0, 0, 0); group.quaternion.identity(); group.scale.setScalar(1);
   xrUI.style.display = 'flex';           // restore Enter VR/AR
   recenterBtn.style.display = 'none';
+  if (navBtn) navBtn.style.display = 'block';
 });
 
 addEventListener('resize', () => {
@@ -357,6 +360,7 @@ const startPlayback = () => {
       camera.lookAt(controls.target);
     }
     if (renderer.xr.isPresenting) { pollReset(); updateTwoHand(); } // grab/scale + reset in XR
+    else if (flyActive && !camPathActive) flyControls.update(camera, camera); // 🕹 fly — SparkControls tracks its own clock (moves the camera object itself)
     else if (!camPathActive) controls.update();                     // headset owns the camera in XR; OrbitControls.update() ignores 'enabled' + clamps radius → skip while the path owns the camera
     renderer.render(scene, camera);
   });
@@ -377,12 +381,36 @@ const camBtn = document.getElementById('campath');
 const updateCamBtn = () => { if (camBtn) camBtn.style.opacity = camPathActive ? '1' : '0.4'; };
 const setCamPath = (on) => {
   camPathActive = on && !!camSpline;
-  controls.enabled = !camPathActive;
+  if (camPathActive && flyActive) setFly(false);  // 🎥 takes the camera back from Fly
+  controls.enabled = !camPathActive && !flyActive;
   updateCamBtn();
 };
 if (camBtn) camBtn.addEventListener('click', () => setCamPath(!camPathActive));
 renderer.domElement.addEventListener('pointerdown', () => { if (camPathActive) setCamPath(false); });
 renderer.domElement.addEventListener('wheel', () => { if (camPathActive) setCamPath(false); }, { passive: true });
+
+// 🕹 fly navigation toggle — Orbit (default) ↔ Spark fly controls (WASD/arrows + mouse drag; touch
+// comes free via PointerControls). SparkControls is constructed LAZILY on first activation because
+// its PointerControls attaches canvas pointer listeners in the constructor — building it up-front
+// would touch plain Orbit sessions. Fly and the 🎥 camera path are mutually exclusive; in XR the
+// headset owns the camera (button hidden, no fly updates).
+const navBtn = document.getElementById('nav');
+let flyControls = null;
+let flyActive = false;
+const updateNavBtn = () => { if (navBtn) navBtn.style.opacity = flyActive ? '1' : '0.4'; };
+const setFly = (on) => {
+  if (on && !flyControls) flyControls = new SparkControls({ canvas: renderer.domElement });
+  flyActive = !!on && !!flyControls;
+  if (flyActive && camPathActive) setCamPath(false);  // 🕹 takes the camera from the flythrough
+  controls.enabled = !flyActive && !camPathActive;
+  if (flyControls) {
+    flyControls.fpsMovement.enable = flyActive;
+    flyControls.pointerControls.enable = flyActive;
+    flyControls.lastTime = 0;  // first update() after a toggle sees deltaTime 0 → no idle-time jump
+  }
+  updateNavBtn();
+};
+if (navBtn) navBtn.addEventListener('click', () => setFly(!flyActive));
 
 // build the spline from manifest.camera (version-independent; absent/malformed → zero behavior change)
 const setupCameraPath = (manifest) => {
@@ -397,6 +425,7 @@ const setupCameraPath = (manifest) => {
     camData = cam;
     camPathActive = true;               // default ON when a path ships (showcase-first)
     controls.enabled = false;
+    if (flyActive) setFly(false);       // a shipped path takes precedence over an early 🕹 toggle
     if (camBtn) { camBtn.style.display = 'block'; updateCamBtn(); }
   } catch (e) {
     // a hand-edited/malformed camera block must never break playback (spec: ignore it)

@@ -18,12 +18,14 @@
     #err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 20px;
       z-index: 6; color: #ff8080; }
     /* persistent sound toggle (stays put; hidden only when the bake has no audio) */
-    #sound, #campath { position: fixed; left: 16px; bottom: 22px; z-index: 5;
+    #sound, #campath, #nav { position: fixed; left: 16px; bottom: 22px; z-index: 5;
       background: rgba(0,0,0,.55); padding: 7px 13px; border-radius: 20px; cursor: pointer;
       border: 1px solid #555; color: #ddd; font: inherit; user-select: none; }
-    #sound:hover, #campath:hover { border-color: #9b8cff; }
+    #sound:hover, #campath:hover, #nav:hover { border-color: #9b8cff; }
     /* camera flythrough toggle — stacked ABOVE #sound (not beside: would overlap #xr on narrow phones) */
     #campath { left: 16px; bottom: 64px; }
+    /* fly-navigation toggle — stacked ABOVE #campath; lit when Fly is active, dimmed in Orbit */
+    #nav { left: 16px; bottom: 106px; }
     /* our own XR buttons (three's VR/AR buttons overlap + disable poorly) */
     #xr { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 6;
       display: flex; gap: 12px; }
@@ -63,6 +65,7 @@
   <div id="load"><div id="load-label">Loading…</div><div id="load-bg"><div id="load-bar"></div></div></div>
   <button id="sound" title="Mute / unmute sound">🔊</button>
   <button id="campath" title="Camera flythrough on/off" style="display:none">🎥</button>
+  <button id="nav" title="Fly navigation on/off (WASD + mouse)" style="opacity:.4">🕹</button>
   <div id="xr"><button id="enter-vr" disabled>VR…</button><button id="enter-ar" disabled>AR…</button></div>
   <button id="recenter">⟳ Recenter</button>
   <div id="copyright">© 2026 Shooting Lab Limited · All Rights Reserved · <a href="https://slfpv.com" target="_blank" rel="noopener">slfpv.com</a></div>
