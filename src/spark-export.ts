@@ -185,7 +185,11 @@ const registerSparkExport = (events: Events, scene: Scene) => {
 
                     // bake the entity's full world transform (constant across frames; atlases carry
                     // no palette edits). identity fast path keeps avatar-only exports byte-identical.
-                    const worldMat = splat.entity.getWorldTransform();
+                    // SNAPSHOT the matrix (never alias the entity's live Mat4): the per-frame loop
+                    // awaits repeatedly and getWorldTransform() lazily recomputes into the same
+                    // instance — a mid-export scene mutation would otherwise bake later frames with a
+                    // newer position matrix than their rotation/scale snapshot.
+                    const worldMat = new Mat4().copy(splat.entity.getWorldTransform());
                     const bake: Bake | null = isIdentityMat(worldMat) ? null : {
                         mat: worldMat,
                         rot: new Quat().setFromMat4(worldMat), // scale-safe (normalizes basis)

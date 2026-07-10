@@ -309,7 +309,7 @@ async function loadScene(manifest) {
     animObjects.push(st);
     const head = Math.min(o.headCount || 1, o.frames);
     const bufs = [];
-    for (let i = 0; i < head; i++) bufs.push(fetch(`./${o.dir}/frames/frame_${pad4(i)}.spz`).then((r) => r.arrayBuffer()));
+    for (let i = 0; i < head; i++) bufs.push(fetch(`./${o.dir}/frames/frame_${pad4(i)}.spz`).then((r) => { if (!r.ok) throw new Error(`${o.dir} frame ${r.status}`); return r.arrayBuffer(); }));
     for (let i = 0; i < head; i++) { addFrameTo(st, new Uint8Array(await bufs[i])); bump(); }
   }
 
