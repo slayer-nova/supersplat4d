@@ -241,9 +241,23 @@ const registerSparkExport = (events: Events, scene: Scene) => {
                 }
             }
 
+            // camera keyframe path (SuperSplat poseSets, set 0) — same rules the editor's flythrough uses
+            const poseSets = (events.invoke('docSerialize.poseSets') ?? []) as any[];
+            const duration = (events.invoke('timeline.frames') as number) || 0;
+            const camPoses = ((poseSets[0]?.poses ?? []) as any[])
+            .filter(p => p.frame < duration)
+            .sort((a, b) => a.frame - b.frame)
+            .map(p => ({ frame: p.frame, position: p.position, target: p.target }));
+            const camera = camPoses.length >= 2 ? {
+                frames: duration,
+                fps: (events.invoke('timeline.frameRate') as number) || 30,
+                smoothness: (events.invoke('timeline.smoothness') as number) ?? 1,
+                poses: camPoses
+            } : null;
+
             // 4. manifest (v2 — scene manifest)
             zip.file('manifest.json', JSON.stringify({
-                version: 2, name, audio: audioName, objects: manifestObjects
+                version: 2, name, audio: audioName, objects: manifestObjects, ...(camera ? { camera } : {})
             }));
 
             // 5. generate + download
