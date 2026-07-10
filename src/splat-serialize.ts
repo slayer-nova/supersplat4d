@@ -26,6 +26,10 @@ type SerializeSettings = {
     keepStateData?: boolean;        // keep the state data array
     keepWorldTransform?: boolean;   // don't apply the world transform when resolving splat transforms
     keepColorTint?: boolean;        // refrain from applying color tints
+
+    // bake the pure entity world transform — Spark/editor-world frame; unlike keepWorldTransform:false
+    // there is NO Rz(-180) PLY-round-trip prefix
+    bakeFullWorldTransform?: boolean;
 };
 
 type AnimTrack = {
@@ -208,7 +212,7 @@ class SplatTransformCache {
     getScale: (index: number) => Vec3;
     getSHRot: (index: number) => SHRotation;
 
-    constructor(splat: Splat, keepWorldTransform = false) {
+    constructor(splat: Splat, keepWorldTransform = false, bakeFullWorldTransform = false) {
         const transforms = new Map<number, { transformIndex: number, mat: Mat4, rot: Quat, scale: Vec3, shRot: SHRotation }>();
         const indices = splat.transformTexture.getSource() as unknown as Uint32Array;
         const tmpMat = new Mat4();
@@ -231,8 +235,11 @@ class SplatTransformCache {
             if (!transform.mat) {
                 const mat = new Mat4();
 
-                // we must undo the transform we apply at load time to output data
-                if (!keepWorldTransform) {
+                if (bakeFullWorldTransform) {
+                    // bake the pure editor-world frame (Spark export) — no Rz(-180) PLY prefix
+                    mat.copy(splat.entity.getWorldTransform());
+                } else if (!keepWorldTransform) {
+                    // we must undo the transform we apply at load time to output data
                     mat.setFromEulerAngles(0, 0, -180);
                     mat.mul2(mat, splat.entity.getWorldTransform());
                 }
@@ -327,7 +334,7 @@ class SingleSplat {
             // get the cached data entry for this splat
             if (splat !== cacheEntry?.splat) {
                 if (!cacheMap.has(splat)) {
-                    const transformCache = new SplatTransformCache(splat, serializeSettings.keepWorldTransform);
+                    const transformCache = new SplatTransformCache(splat, serializeSettings.keepWorldTransform, serializeSettings.bakeFullWorldTransform);
 
                     const srcPropNames = getVertexProperties(splat.splatData);
                     const srcSHBands = calcSHBands(srcPropNames);
@@ -497,7 +504,7 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
     // Check if any splat is dynamic - if all are static, filter out dynamic properties
     const hasDynamicSplat = splats.some(s => s.isDynamic);
     const dynamicProps = ['motion_0', 'motion_1', 'motion_2', 'trbf_center', 'trbf_scale'];
-    
+
     const props = getCommonProps(splats)
     // filter out internal props
     .filter(p => !internalProps.includes(p.name))
@@ -1131,6 +1138,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
 
 export {
     Writer,
+    SingleSplat,
     SplatTransformCache,
     serializePly,
     serializePlyCompressed,
