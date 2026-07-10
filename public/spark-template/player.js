@@ -190,17 +190,7 @@ if (navigator.xr) {
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
-const spark = new SparkRenderer({ renderer }); // required for splats to draw; kept for DoF props
-scene.add(spark);
-
-// 🎥 flythrough depth-of-field — while the camera path drives the camera, focus SparkRenderer's
-// DoF on the spline's look-at target with a subtle aperture (cinematic focus pull, cheap: it's a
-// per-splat blur in the existing splat shader, no post pass). apertureAngle = 0 is the engine's
-// documented disabled default (the shader gates on focalDistance>0 && apertureAngle>0), so
-// restoring 0 on any path exit (toggle/handoff/XR) returns to the exact non-DoF render path.
-// ?dof=0 opts out entirely. DoF is never applied outside the flythrough.
-const dofEnabled = new URLSearchParams(location.search).get('dof') !== '0';
-const DOF_APERTURE = 0.02; // full-width aperture angle in radians — subtle
+scene.add(new SparkRenderer({ renderer })); // required for splats to draw
 
 const group = new THREE.Group(); // our atlas .spz is already Y-up in three → identity
 scene.add(group);
@@ -481,10 +471,6 @@ const startPlayback = () => {
       camera.position.set(camOut[0], camOut[1], camOut[2]);
       controls.target.set(camOut[3], camOut[4], camOut[5]);
       camera.lookAt(controls.target);
-      if (dofEnabled) { // depth-of-field: focal plane at the path's look-at point
-        spark.focalDistance = camera.position.distanceTo(controls.target);
-        spark.apertureAngle = DOF_APERTURE;
-      }
     }
     if (renderer.xr.isPresenting) { pollReset(); updateTwoHand(); } // grab/scale + reset in XR
     else if (flyActive && !camPathActive) flyControls.update(camera, camera); // 🕹 fly — SparkControls tracks its own clock (moves the camera object itself)
@@ -509,7 +495,6 @@ const updateCamBtn = () => { if (camBtn) camBtn.style.opacity = camPathActive ? 
 const setCamPath = (on) => {
   camPathActive = on && !!camSpline;
   if (camPathActive && flyActive) setFly(false);  // 🎥 takes the camera back from Fly
-  if (!camPathActive && dofEnabled) spark.apertureAngle = 0; // path off → disable DoF (0 = shader off-gate)
   controls.enabled = !camPathActive && !flyActive;
   updateCamBtn();
 };
