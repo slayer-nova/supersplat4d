@@ -318,7 +318,17 @@ let audioEl = null;
 
 // camera flythrough (manifest.camera) — spline path replayed on the shared scene clock
 let camSpline = null, camData = null, camPathActive = false, camOut = new Array(6);
+let camPathMode = 'auto';   // 'auto' | 'manual' | 'off' — resolved in resolvePlayerConfig
+let camPathOffsetSec = 0;   // manual mode: clock at 🎥 activation → path replays from ITS OWN frame 0 (stays 0 in auto)
 let playStartMs = 0;   // set in startPlayback()
+
+// the shared scene clock (same source the render loop uses to pose the camera path): the
+// audio-owning object's soundtrack when it is running, wall time since playback start otherwise
+const clockSec = () => {
+  const audioOwner = animObjects.find((o) => o.hasAudio);
+  if (audioOwner && audioEl && !audioEl.paused && audioEl.duration) return audioEl.currentTime;
+  return (performance.now() - playStartMs) / 1000;
+};
 
 const addFrameTo = (o, u8) => {
   const m = new SplatMesh({ fileBytes: u8, fileType: 'spz' });
@@ -328,26 +338,31 @@ const addFrameTo = (o, u8) => {
   revealAdd(m);
 };
 
-// ✨ splat-REVEAL entrance — "Spread" effect ported verbatim from the official sparkjs.dev
-// "Splat Reveal Effects" example (effectType == 2 branch): a per-gsplat objectModifier
-// (dyno shader graph) driven by one shared time uniform makes the scene emerge radially —
-// splats scale up from nothing and fade from flat grey to true color, outward from the axis.
-// It plays RIGHT AFTER the loading bar completes (covers the visual pop-in), for ~2.2 s, then
-// the modifier is REMOVED (objectModifier = undefined + updateGenerator) so steady-state
-// rendering returns to the exact zero-cost pipeline. Meshes are collected while loading;
-// anything that streams in during the reveal window joins it, anything later never gets the
-// modifier. Orthogonal to the frame-swap .visible cycling (head meshes keep cycling — fine).
-// ?reveal=off disables entirely; a dyno failure must never break playback.
-const revealEnabled = new URLSearchParams(location.search).get('reveal') !== 'off';
-// Default 4.5 s (user feedback: 2.2 s felt too fast). Override: ?revealsec=6 → 6 s (clamped 0.5–20).
-const REVEAL_MS = (() => {
-  const s = parseFloat(new URLSearchParams(location.search).get('revealsec'));
-  return Number.isFinite(s) ? Math.min(20, Math.max(0.5, s)) * 1000 : 4500;
-})();
-// Example-time at reveal end. The Spread math saturates as tt = t*t*.4+.5 grows: centers are
-// exact from tt >= 14, scales/colors from tt >= 8+2.5*l (l = splat distance from the local Y
-// axis). t = 7 → tt ≈ 20 → everything within l ≈ 4.8 u is at identity when the modifier is
-// removed, so the removal is invisible for our ~0.5 u heads + room-scale statics.
+// ✨ splat-REVEAL entrance — all five effects from the official sparkjs.dev "Splat Reveal
+// Effects" example (Magic / Spread / Unroll / Twister / Rain): one per-gsplat objectModifier
+// (dyno shader graph) with the example's effectType int uniform selecting the GLSL branch,
+// driven by one shared time uniform. It plays RIGHT AFTER the loading bar completes (covers
+// the visual pop-in), then the modifier is REMOVED (objectModifier = undefined +
+// updateGenerator) so steady-state rendering returns to the exact zero-cost pipeline. Meshes
+// are collected while loading; anything that streams in during the reveal window joins it,
+// anything later never gets the modifier. Orthogonal to the frame-swap .visible cycling.
+// Selection precedence: ?reveal=off|spread|magic|unroll|twister|rain > manifest.player.reveal
+// .effect > 'spread'; duration: ?revealsec=N > manifest.player.reveal.sec > 4.5 s. Old
+// packages (no manifest.player, no URL params) get spread/4.5 s — the previous behavior.
+// A dyno failure must never break playback.
+const urlParams = new URLSearchParams(location.search);
+const REVEAL_EFFECT_IDS = { magic: 1, spread: 2, unroll: 3, twister: 4, rain: 5 }; // example's effectType ints
+let revealEffectName = 'spread';  // resolved in resolvePlayerConfig (URL > manifest.player > default)
+let REVEAL_MS = 4500;             // ditto (clamped 0.5–20 s, same clamp the old ?revealsec had)
+// Example-time at reveal end (kept at 7 for all five effects in v1). The Spread math saturates
+// as tt = t*t*.4+.5 grows: centers are exact from tt >= 14, scales/colors from tt >= 8+2.5*l
+// (l = splat distance from the local Y axis, normalized to the demo-valley scale, see revealK).
+// t = 7 → tt ≈ 20 → everything within l ≈ 4.8 is at identity when the modifier is removed, so
+// the removal is invisible. The OTHER four branches still have residual motion at t = 7 (Magic
+// scales-in ends ~t≈10, Twister ~t≈12.5, Rain's rot(t*.3) never settles at all) → for those the
+// last ≤300 ms of the reveal window blends the effect output back to the unmodified splat
+// (revealE uniform), so modifier removal never snaps. Spread keeps revealE = 0 → its rendering
+// is unchanged from the previous single-effect player.
 const REVEAL_T_END = 7.0;
 // The official Spread is tuned for VALLEY-scale content: its wave terms (tt - l*2.5 etc.) use the
 // splat's ABSOLUTE distance l from the local Y axis, and saturate around l ≈ 4.8 world units. On a
@@ -359,40 +374,205 @@ const REVEAL_T_END = 7.0;
 const REVEAL_L_REF = 4.8;
 let revealSceneRadius = 0.35;  // set from manifest in load()
 let revealT = null;         // shared dyno float uniform (example's animateT)
-let revealK = null;         // shared dyno float uniform — l normalization factor
+let revealK = null;         // shared dyno float uniform — scene-scale normalization factor
+let revealE = null;         // shared dyno float uniform — end blend to identity (0 = effect, 1 = raw splat)
+let revealEffect = null;    // shared dyno int uniform — the example's effectType branch selector
+let revealEndBlendMs = 0;   // per-effect end-blend window, set in startReveal (0 for spread)
 let revealModifier = null;  // one dynoBlock shared by every mesh → compiled-generator cache hit
 let revealMeshes = [];      // meshes carrying the modifier during the reveal window
 let revealActive = false;
-let revealDone = !revealEnabled;  // done → stop collecting, never attach again
+let revealDone = false;     // done → stop collecting, never attach again (set by resolvePlayerConfig for 'off')
 let revealStartMs = 0;
+
+// Precedence everywhere: URL param > manifest.player > built-in default. Old packages have no
+// manifest.player → spread / 4.5 s / campath auto: decisions identical to the previous player.
+// Called in load() right after the manifest fetch — before any mesh exists and before
+// setupCameraPath, so both the reveal collector and the camera path see the resolved config.
+const resolvePlayerConfig = (manifest) => {
+  const mp = (manifest && typeof manifest.player === 'object' && manifest.player) ? manifest.player : {};
+  const mReveal = (mp.reveal && typeof mp.reveal === 'object') ? mp.reveal : {};
+  // effect: ?reveal=off|spread|magic|unroll|twister|rain (the existing ?reveal=off keeps working)
+  const rawEffect = urlParams.get('reveal') ?? (typeof mReveal.effect === 'string' ? mReveal.effect : null);
+  let name = rawEffect === null ? 'spread' : String(rawEffect).toLowerCase();
+  if (name !== 'off' && !(name in REVEAL_EFFECT_IDS)) {
+    console.warn(`unknown reveal effect "${rawEffect}" — falling back to spread`);
+    name = 'spread';
+  }
+  revealEffectName = name;
+  revealDone = name === 'off';
+  // duration: ?revealsec=N > manifest.player.reveal.sec > 4.5 (clamped 0.5–20 s either way)
+  const urlSec = parseFloat(urlParams.get('revealsec'));
+  const sec = Number.isFinite(urlSec) ? urlSec : (Number.isFinite(mReveal.sec) ? mReveal.sec : 4.5);
+  REVEAL_MS = Math.min(20, Math.max(0.5, sec)) * 1000;
+  // camera path: ?campath=auto|manual|off > manifest.player.camera.autoplay (true→auto,
+  // false→manual) > auto. 'off' = ignore manifest.camera entirely (no spline, no 🎥 button).
+  const urlCam = urlParams.get('campath');
+  if (urlCam === 'auto' || urlCam === 'manual' || urlCam === 'off') {
+    camPathMode = urlCam;
+  } else {
+    if (urlCam !== null) console.warn(`unknown campath mode "${urlCam}" — ignored`);
+    const mCam = (mp.camera && typeof mp.camera === 'object') ? mp.camera : null;
+    camPathMode = (mCam && mCam.autoplay === false) ? 'manual' : 'auto';
+  }
+};
 
 const makeRevealModifier = () => {
   if (revealModifier) return true;
   try {
     revealT = dyno.dynoFloat(0);
     revealK = dyno.dynoFloat(1);
-    const spread = new dyno.Dyno({
-      inTypes: { gsplat: dyno.Gsplat, t: 'float', k: 'float' },
+    revealE = dyno.dynoFloat(0);
+    revealEffect = dyno.dynoInt(REVEAL_EFFECT_IDS[revealEffectName] || REVEAL_EFFECT_IDS.spread);
+    // The official example's effect Dyno, whole (all five GLSL branches + utility globals),
+    // with two additions: (1) EVERY branch runs its position/scale math in NORMALIZED space —
+    // p = center * k in, result / k out — so the example's absolute-unit constants (spread wave
+    // phase, magic noise offsets, rain drop height, twister angle-by-height, unroll distance)
+    // behave as if the scene were valley-scale regardless of actual size (this subsumes the old
+    // Spread-specific l*k — identical result, since Spread's math is xz-radial); (2) an end
+    // blend `e` that lerps the effect output back to the raw splat over the final window (see
+    // REVEAL_T_END notes) so removing the modifier never snaps. quatQuat comes from Spark's
+    // built-in GLSL splat utils (splatDefines), same as in the example.
+    const effect = new dyno.Dyno({
+      inTypes: { gsplat: dyno.Gsplat, t: 'float', k: 'float', e: 'float', effectType: 'int' },
       outTypes: { gsplat: dyno.Gsplat },
-      // Spread: gentle radial emergence with scaling — official example math, with l normalized
-      // by k (scene-scale factor) so the wave phase spans the scene like it does on the demo valley
+      // GLSL utility functions for effects — official example, verbatim
+      globals: () => [
+        dyno.unindent(`
+          // Pseudo-random hash function
+          vec3 hash(vec3 p) {
+            p = fract(p * 0.3183099 + 0.1);
+            p *= 17.0;
+            return fract(vec3(p.x * p.y * p.z, p.x + p.y * p.z, p.x * p.y + p.z));
+          }
+
+          // 3D Perlin-style noise function
+          vec3 noise(vec3 p) {
+            vec3 i = floor(p);
+            vec3 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+
+            vec3 n000 = hash(i + vec3(0,0,0));
+            vec3 n100 = hash(i + vec3(1,0,0));
+            vec3 n010 = hash(i + vec3(0,1,0));
+            vec3 n110 = hash(i + vec3(1,1,0));
+            vec3 n001 = hash(i + vec3(0,0,1));
+            vec3 n101 = hash(i + vec3(1,0,1));
+            vec3 n011 = hash(i + vec3(0,1,1));
+            vec3 n111 = hash(i + vec3(1,1,1));
+
+            vec3 x0 = mix(n000, n100, f.x);
+            vec3 x1 = mix(n010, n110, f.x);
+            vec3 x2 = mix(n001, n101, f.x);
+            vec3 x3 = mix(n011, n111, f.x);
+
+            vec3 y0 = mix(x0, x1, f.y);
+            vec3 y1 = mix(x2, x3, f.y);
+
+            return mix(y0, y1, f.z);
+          }
+
+          // 2D rotation matrix
+          mat2 rot(float a) {
+            float s=sin(a),c=cos(a);
+            return mat2(c,-s,s,c);
+          }
+          // Twister weather effect
+          vec4 twister(vec3 pos, vec3 scale, float t) {
+            vec3 h = hash(pos);
+            float s = smoothstep(0., 8., t*t*.1 - length(pos.xz)*2.+2.);
+            if (length(scale) < .05) pos.y = mix(-10., pos.y, pow(s, 2.*h.x));
+            pos.xz = mix(pos.xz*.5, pos.xz, pow(s, 2.*h.x));
+            float rotationTime = t * (1.0 - s) * 0.2;
+            pos.xz *= rot(rotationTime + pos.y*20.*(1.-s)*exp(-1.*length(pos.xz)));
+            return vec4(pos, s*s*s*s);
+          }
+
+          // Rain weather effect
+          vec4 rain(vec3 pos, vec3 scale, float t) {
+            vec3 h = hash(pos);
+            float s = pow(smoothstep(0., 5., t*t*.1 - length(pos.xz)*2. + 1.), .5 + h.x);
+            float y = pos.y;
+            pos.y = min(-10. + s*15., pos.y);
+            pos.xz = mix(pos.xz*.3, pos.xz, s);
+            pos.xz *= rot(t*.3);
+            return vec4(pos, smoothstep(-10., y, pos.y));
+          }
+        `)
+      ],
+      // Main effect shader logic — official example branches, in normalized space (see above)
       statements: ({ inputs, outputs }) => dyno.unindentLines(`
         ${outputs.gsplat} = ${inputs.gsplat};
         float t = ${inputs.t};
-        vec3 scales = ${inputs.gsplat}.scales;
-        vec3 localPos = ${inputs.gsplat}.center;
-        float l = length(localPos.xz) * ${inputs.k};
-        float tt = t*t*.4+.5;
-        localPos.xz *= min(1.,.3+max(0.,tt*.05));
-        ${outputs.gsplat}.center = localPos;
-        ${outputs.gsplat}.scales = max(mix(vec3(0.0),scales,min(tt-7.-l*2.5,1.)),mix(vec3(0.0),scales*.2,min(tt-1.-l*2.,1.)));
-        ${outputs.gsplat}.rgba = mix(vec4(.3),${inputs.gsplat}.rgba,clamp(tt-l*2.5-3.,0.,1.));
+        float k = ${inputs.k};
+        float s = smoothstep(0.,10.,t-4.5)*10.;
+        vec3 scales = ${inputs.gsplat}.scales * k;
+        vec3 localPos = ${inputs.gsplat}.center * k;
+        float l = length(localPos.xz);
+
+        if (${inputs.effectType} == 1) {
+          // Magic Effect: Complex twister with noise and radial reveal
+          float border = abs(s-l-.5);
+          localPos *= 1.-.2*exp(-20.*border);
+          vec3 finalScales = mix(scales,vec3(0.002),smoothstep(s-.5,s,l+.5));
+          ${outputs.gsplat}.center = (localPos + .1*noise(localPos.xyz*2.+t*.5)*smoothstep(s-.5,s,l+.5)) / k;
+          ${outputs.gsplat}.scales = finalScales / k;
+          float at = atan(localPos.x,localPos.z)/3.1416;
+          ${outputs.gsplat}.rgba *= step(at,t-3.1416);
+          ${outputs.gsplat}.rgba += exp(-20.*border) + exp(-50.*abs(t-at-3.1416))*.5;
+
+        } else if (${inputs.effectType} == 2) {
+          // Spread Effect: Gentle radial emergence with scaling
+          float tt = t*t*.4+.5;
+          localPos.xz *= min(1.,.3+max(0.,tt*.05));
+          ${outputs.gsplat}.center = localPos / k;
+          ${outputs.gsplat}.scales = max(mix(vec3(0.0),scales,min(tt-7.-l*2.5,1.)),mix(vec3(0.0),scales*.2,min(tt-1.-l*2.,1.))) / k;
+          ${outputs.gsplat}.rgba = mix(vec4(.3),${inputs.gsplat}.rgba,clamp(tt-l*2.5-3.,0.,1.));
+
+        } else if (${inputs.effectType} == 3) {
+          // Unroll Effect: Rotating helix with vertical reveal
+          localPos.xz *= rot((localPos.y*50.-20.)*exp(-t));
+          ${outputs.gsplat}.center = localPos * (1.-exp(-t)*2.) / k;
+          ${outputs.gsplat}.scales = mix(vec3(0.002),scales,smoothstep(.3,.7,t+localPos.y-2.)) / k;
+          ${outputs.gsplat}.rgba = ${inputs.gsplat}.rgba*step(0.,t*.5+localPos.y-.5);
+        } else if (${inputs.effectType} == 4) {
+          // Twister Effect: swirling weather reveal
+          vec4 effectResult = twister(localPos, scales, t);
+          ${outputs.gsplat}.center = effectResult.xyz / k;
+          ${outputs.gsplat}.scales = mix(vec3(.002), scales, pow(effectResult.w, 12.)) / k;
+          float sT = effectResult.w;
+          // Also apply a spin (self-rotation) so each splat rotates about its own center.
+          float spin = -t * 0.3 * (1.0 - sT);
+          vec4 spinQ = vec4(0.0, sin(spin*0.5), 0.0, cos(spin*0.5));
+          ${outputs.gsplat}.quaternion = quatQuat(spinQ, ${inputs.gsplat}.quaternion);
+        } else if (${inputs.effectType} == 5) {
+          // Rain Effect: falling streaks
+          vec4 effectResult = rain(localPos, scales, t);
+          ${outputs.gsplat}.center = effectResult.xyz / k;
+          ${outputs.gsplat}.scales = mix(vec3(.005), scales, pow(effectResult.w, 30.)) / k;
+          // Also apply a spin (self-rotation) so each splat rotates about its own center.
+          float spin = -t*.3;
+          vec4 spinQ = vec4(0.0, sin(spin*0.5), 0.0, cos(spin*0.5));
+          ${outputs.gsplat}.quaternion = quatQuat(spinQ, ${inputs.gsplat}.quaternion);
+        }
+
+        // end blend — lerp back to the unmodified splat so modifier removal never snaps
+        // (e stays 0 for Spread and outside the final window → the branches above are exact)
+        float e = ${inputs.e};
+        if (e > 0.) {
+          ${outputs.gsplat}.center = mix(${outputs.gsplat}.center, ${inputs.gsplat}.center, e);
+          ${outputs.gsplat}.scales = mix(${outputs.gsplat}.scales, ${inputs.gsplat}.scales, e);
+          ${outputs.gsplat}.rgba = mix(${outputs.gsplat}.rgba, ${inputs.gsplat}.rgba, e);
+          vec4 qa = ${outputs.gsplat}.quaternion;
+          vec4 qb = ${inputs.gsplat}.quaternion;
+          if (dot(qa, qb) < 0.) qb = -qb;
+          ${outputs.gsplat}.quaternion = normalize(mix(qa, qb, e));
+        }
       `)
     });
     revealModifier = dyno.dynoBlock(
       { gsplat: dyno.Gsplat },
       { gsplat: dyno.Gsplat },
-      ({ gsplat }) => ({ gsplat: spread.apply({ gsplat, t: revealT, k: revealK }).gsplat })
+      ({ gsplat }) => ({ gsplat: effect.apply({ gsplat, t: revealT, k: revealK, e: revealE, effectType: revealEffect }).gsplat })
     );
     return true;
   } catch (e) {
@@ -413,6 +593,9 @@ const revealAdd = (m) => {
 const startReveal = () => {
   if (revealDone || !makeRevealModifier()) return;
   revealK.value = REVEAL_L_REF / Math.max(revealSceneRadius, 0.05);   // scene-scale normalization
+  // Spread settles exactly by REVEAL_T_END → no end blend (old-package rendering unchanged);
+  // the other four still have residual motion at t = 7 → blend the last ≤300 ms to identity.
+  revealEndBlendMs = revealEffectName === 'spread' ? 0 : Math.min(300, REVEAL_MS * 0.2);
   for (const m of revealMeshes) { m.objectModifier = revealModifier; m.updateGenerator(); }
   revealActive = true;
   revealStartMs = performance.now();
@@ -474,6 +657,10 @@ const startPlayback = () => {
     if (revealActive) {
       const p = Math.min(Math.max((t - revealStartMs) / REVEAL_MS, 0), 1);
       revealT.value = p * REVEAL_T_END;
+      if (revealEndBlendMs > 0) {  // final identity blend (non-spread effects, see startReveal)
+        const eb = Math.min(Math.max((t - revealStartMs - (REVEAL_MS - revealEndBlendMs)) / revealEndBlendMs, 0), 1);
+        revealE.value = eb * eb * (3 - 2 * eb);   // smoothstep
+      }
       for (const m of revealMeshes) m.updateVersion();
       if (p >= 1) endReveal();
     }
@@ -483,7 +670,7 @@ const startPlayback = () => {
       const audioOwner = animObjects.find((o) => o.hasAudio);
       if (audioOwner && audioEl && !audioEl.paused && audioEl.duration) sec = audioEl.currentTime;
       else sec = (t - playStartMs) / 1000;
-      const fr = ((sec * camData.fps) % camData.frames + camData.frames) % camData.frames;
+      const fr = (((sec - camPathOffsetSec) * camData.fps) % camData.frames + camData.frames) % camData.frames;
       camSpline.evaluate(fr, camOut);
       camera.position.set(camOut[0], camOut[1], camOut[2]);
       controls.target.set(camOut[3], camOut[4], camOut[5]);
@@ -511,6 +698,10 @@ const camBtn = document.getElementById('campath');
 const updateCamBtn = () => { if (camBtn) camBtn.style.opacity = camPathActive ? '1' : '0.4'; };
 const setCamPath = (on) => {
   camPathActive = on && !!camSpline;
+  // manual mode: each 🎥 activation replays the path from ITS OWN frame 0 — anchor it to the
+  // shared clock at this instant (re-toggling recomputes). Auto mode keeps offset 0 so the
+  // autoplay path stays aligned with the avatar timeline, exactly as before.
+  if (camPathActive && camPathMode === 'manual') camPathOffsetSec = started ? clockSec() : 0;
   if (camPathActive && flyActive) setFly(false);  // 🎥 takes the camera back from Fly
   controls.enabled = !camPathActive && !flyActive;
   updateCamBtn();
@@ -553,6 +744,7 @@ if (navBtn) navBtn.addEventListener('click', () => setFly(!flyActive));
 // build the spline from manifest.camera (version-independent; absent/malformed → zero behavior change)
 const setupCameraPath = (manifest) => {
   try {
+    if (camPathMode === 'off') return;  // ?campath=off — ignore manifest.camera entirely (no spline, no 🎥)
     const cam = manifest && manifest.camera;
     if (!cam || !Array.isArray(cam.poses) || cam.poses.length < 2 || !(cam.frames > 0) || !(cam.fps > 0)) return;
     if (!cam.poses.every((p) => Array.isArray(p.position) && Array.isArray(p.target))) return;
@@ -561,10 +753,14 @@ const setupCameraPath = (manifest) => {
     cam.poses.forEach((p) => { points.push(p.position[0], p.position[1], p.position[2], p.target[0], p.target[1], p.target[2]); });
     camSpline = CubicSpline.fromPointsLooping(cam.frames, times, points, cam.smoothness ?? 1);
     camData = cam;
-    camPathActive = true;               // default ON when a path ships (showcase-first)
-    controls.enabled = false;
-    if (flyActive) setFly(false);       // a shipped path takes precedence over an early 🕹 toggle
-    if (camBtn) { camBtn.style.display = 'block'; updateCamBtn(); }
+    if (camPathMode === 'manual') {
+      camPathActive = false;            // waits for the 🎥 button — path then starts at its own frame 0
+    } else {
+      camPathActive = true;             // auto (default) — ON when a path ships (showcase-first)
+      controls.enabled = false;
+      if (flyActive) setFly(false);     // a shipped path takes precedence over an early 🕹 toggle
+    }
+    if (camBtn) { camBtn.style.display = 'block'; updateCamBtn(); }  // manual → visible + dimmed
   } catch (e) {
     // a hand-edited/malformed camera block must never break playback (spec: ignore it).
     // controls ownership invariant: Orbit re-enables only if Fly doesn't own the camera.
@@ -582,6 +778,7 @@ async function load() {
     if (!r.ok) throw new Error('manifest ' + r.status);
     return r.json();
   });
+  resolvePlayerConfig(manifest);       // URL > manifest.player > defaults (reveal effect/sec + campath mode)
   setupCameraPath(manifest);           // v1 AND v2 — manifest.camera is version-independent
   if (manifest.sceneRadius > 0) revealSceneRadius = manifest.sceneRadius;   // reveal scale (exporter-written)
   if (manifest.version === 2) return loadScene(manifest);
