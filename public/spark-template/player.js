@@ -364,6 +364,11 @@ let REVEAL_MS = 4500;             // ditto (clamped 0.5–20 s, same clamp the o
 // (revealE uniform), so modifier removal never snaps. Spread keeps revealE = 0 → its rendering
 // is unchanged from the previous single-effect player.
 const REVEAL_T_END = 7.0;
+// Per-effect end time (panel finding): each branch settles at a different t — with a shared t=7,
+// Magic/Twister/Rain only sweep ~1/3 of the normalized radius and the end blend does the rest as a
+// pop. Mapping REVEAL_MS onto each effect's OWN settle time keeps the whole duration on the sweep.
+// (Rain's rotation never fully settles — the end blend still covers its tail.)
+const REVEAL_T_ENDS = { magic: 10.0, spread: 7.0, unroll: 7.0, twister: 12.5, rain: 12.0 };
 // The official Spread is tuned for VALLEY-scale content: its wave terms (tt - l*2.5 etc.) use the
 // splat's ABSOLUTE distance l from the local Y axis, and saturate around l ≈ 4.8 world units. On a
 // ~0.3 u FLEX head every splat shares nearly the same phase → the "spread" collapses into a uniform
@@ -406,7 +411,7 @@ const resolvePlayerConfig = (manifest) => {
   REVEAL_MS = Math.min(20, Math.max(0.5, sec)) * 1000;
   // camera path: ?campath=auto|manual|off > manifest.player.camera.autoplay (true→auto,
   // false→manual) > auto. 'off' = ignore manifest.camera entirely (no spline, no 🎥 button).
-  const urlCam = urlParams.get('campath');
+  const urlCam = urlParams.get('campath')?.toLowerCase() ?? null;
   if (urlCam === 'auto' || urlCam === 'manual' || urlCam === 'off') {
     camPathMode = urlCam;
   } else {
@@ -656,7 +661,7 @@ const startPlayback = () => {
     // Spark re-runs its generator (official example ticks animateT + updateVersion() per frame)
     if (revealActive) {
       const p = Math.min(Math.max((t - revealStartMs) / REVEAL_MS, 0), 1);
-      revealT.value = p * REVEAL_T_END;
+      revealT.value = p * (REVEAL_T_ENDS[revealEffectName] || REVEAL_T_END);
       if (revealEndBlendMs > 0) {  // final identity blend (non-spread effects, see startReveal)
         const eb = Math.min(Math.max((t - revealStartMs - (REVEAL_MS - revealEndBlendMs)) / revealEndBlendMs, 0), 1);
         revealE.value = eb * eb * (3 - 2 * eb);   // smoothstep
