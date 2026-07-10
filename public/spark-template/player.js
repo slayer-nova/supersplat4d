@@ -549,8 +549,9 @@ const setupCameraPath = (manifest) => {
     if (flyActive) setFly(false);       // a shipped path takes precedence over an early 🕹 toggle
     if (camBtn) { camBtn.style.display = 'block'; updateCamBtn(); }
   } catch (e) {
-    // a hand-edited/malformed camera block must never break playback (spec: ignore it)
-    camSpline = null; camData = null; camPathActive = false; controls.enabled = true;
+    // a hand-edited/malformed camera block must never break playback (spec: ignore it).
+    // controls ownership invariant: Orbit re-enables only if Fly doesn't own the camera.
+    camSpline = null; camData = null; camPathActive = false; controls.enabled = !flyActive;
     console.warn('camera path ignored (malformed manifest.camera)', e);
   }
 };
