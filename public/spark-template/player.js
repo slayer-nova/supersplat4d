@@ -407,6 +407,14 @@ const setFly = (on) => {
     flyControls.fpsMovement.enable = flyActive;
     flyControls.pointerControls.enable = flyActive;
     flyControls.lastTime = 0;  // first update() after a toggle sees deltaTime 0 → no idle-time jump
+    // PointerControls' wheel listener accumulates .scroll even while disabled, and its update()
+    // early-returns on !enable BEFORE the drain — so Orbit-mode wheel zooms pile up and would be
+    // applied to the camera in one un-scaled burst on the first fly frame (scroll is NOT
+    // deltaTime-scaled, so the lastTime reset above does not guard it). Drop the backlog, and
+    // zero the inertia vectors so a toggle never replays stale drag momentum.
+    flyControls.pointerControls.scroll.set(0, 0, 0);
+    flyControls.pointerControls.moveVelocity.set(0, 0, 0);
+    flyControls.pointerControls.rotateVelocity.set(0, 0, 0);
   }
   updateNavBtn();
 };
