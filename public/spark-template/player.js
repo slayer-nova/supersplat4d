@@ -386,16 +386,23 @@ renderer.domElement.addEventListener('wheel', () => { if (camPathActive) setCamP
 
 // build the spline from manifest.camera (version-independent; absent/malformed → zero behavior change)
 const setupCameraPath = (manifest) => {
-  const cam = manifest && manifest.camera;
-  if (!cam || !Array.isArray(cam.poses) || cam.poses.length < 2 || !(cam.frames > 0)) return;
-  const times = cam.poses.map((p) => p.frame);
-  const points = [];
-  cam.poses.forEach((p) => { points.push(p.position[0], p.position[1], p.position[2], p.target[0], p.target[1], p.target[2]); });
-  camSpline = CubicSpline.fromPointsLooping(cam.frames, times, points, cam.smoothness ?? 1);
-  camData = cam;
-  camPathActive = true;               // default ON when a path ships (showcase-first)
-  controls.enabled = false;
-  if (camBtn) { camBtn.style.display = 'block'; updateCamBtn(); }
+  try {
+    const cam = manifest && manifest.camera;
+    if (!cam || !Array.isArray(cam.poses) || cam.poses.length < 2 || !(cam.frames > 0) || !(cam.fps > 0)) return;
+    if (!cam.poses.every((p) => Array.isArray(p.position) && Array.isArray(p.target))) return;
+    const times = cam.poses.map((p) => p.frame);
+    const points = [];
+    cam.poses.forEach((p) => { points.push(p.position[0], p.position[1], p.position[2], p.target[0], p.target[1], p.target[2]); });
+    camSpline = CubicSpline.fromPointsLooping(cam.frames, times, points, cam.smoothness ?? 1);
+    camData = cam;
+    camPathActive = true;               // default ON when a path ships (showcase-first)
+    controls.enabled = false;
+    if (camBtn) { camBtn.style.display = 'block'; updateCamBtn(); }
+  } catch (e) {
+    // a hand-edited/malformed camera block must never break playback (spec: ignore it)
+    camSpline = null; camData = null; camPathActive = false; controls.enabled = true;
+    console.warn('camera path ignored (malformed manifest.camera)', e);
+  }
 };
 
 const pad4 = (i) => String(i).padStart(4, '0');
