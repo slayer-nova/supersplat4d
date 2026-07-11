@@ -1,13 +1,15 @@
 import { Events } from './events';
 import { LitoGenerateDialog, type LitoGenerateOptions } from './ui/lito-generate-dialog';
 
-// "Generate from Image (LiTo)" — drive the local ComfyUI-LiTo pipeline over HTTP: upload the
-// chosen image, queue the LiTo graph, poll history until the PLY is written, then import it into
-// the scene via the editor's own import path. See
-// docs/superpowers/specs/2026-07-12-lito-generate-from-image-design.md.
+// "Generate from Image" — drive a local ComfyUI image-to-3DGS pipeline over HTTP: upload the
+// chosen image, queue the graph for the selected model (LiTo or SHARP), poll history until the
+// PLY is written, then import it into the scene via the editor's own import path. See
+// docs/superpowers/specs/2026-07-12-lito-generate-from-image-design.md and the SHARP addendum
+// docs/superpowers/specs/2026-07-12-sharp-generate-addendum.md.
 
 const CLIENT_ID = 'supersplat-lito';
 const STORAGE_KEY = 'lito.comfyUrl';
+const MODEL_STORAGE_KEY = 'lito.genModel';
 const POLL_INTERVAL_MS = 2000;
 const TIMEOUT_MS = 10 * 60 * 1000;   // hard cap, includes ComfyUI queue wait
 
@@ -19,6 +21,36 @@ const sleep = (ms: number) => new Promise<void>((resolve) => {
 const fileStem = (name: string) => {
     const stem = name.replace(/\.[^.]*$/, '').toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 40);
     return stem || 'image';
+};
+
+// per-model ComfyUI graph (wire shape {class_type, inputs}, links = ['<node id>', <output idx>]).
+// Both graphs MUST terminate at an output node:
+// - LiTo: LiToExportPLY is not an output node — a graph ending there is rejected
+//   (prompt_no_outputs); LiToPreviewPointCloud terminates it.
+// - SHARP: a graph ending at SharpPredict completes "successfully" with EMPTY history outputs
+//   (nothing to import); PreviewGaussianSharp terminates it.
+const buildPrompt = (opts: LitoGenerateOptions, uploadedName: string) => {
+    const stem = fileStem(opts.file.name);
+    if (opts.model === 'sharp') {
+        // SHARP PLYs are SH0 (14 props, no f_rest) — spark-export needs NO changes:
+        // detectShBands returns 0 so they take the SH0 baked path automatically, and the
+        // 'lito' Keep-SH name filter doesn't match *_sharp_* names.
+        return {
+            1: { class_type: 'LoadSharpModel', inputs: { device: 'auto' } },
+            2: { class_type: 'LoadImage', inputs: { image: uploadedName } },
+            3: { class_type: 'SharpPredict', inputs: { model: ['1', 0], image: ['2', 0], focal_length_mm: opts.focalMm, output_prefix: `${stem}_sharp` } },
+            4: { class_type: 'PreviewGaussianSharp', inputs: { ply_path: ['3', 0] } }
+        };
+    }
+    const seed = opts.seed === -1 ? Math.floor(Math.random() * 2147483647) : opts.seed;
+    return {
+        1: { class_type: 'LiToLoadModel', inputs: { checkpoint: 'lito_dit_rgba (recommended)', compile: false, precision: 'auto' } },
+        2: { class_type: 'LoadImage', inputs: { image: uploadedName } },
+        3: { class_type: 'LiToPreprocess', inputs: { image: ['2', 0], remove_bg: opts.removeBg, crop: true, fill_ratio: 0.8, keep_optical_axis: true } },
+        4: { class_type: 'LiToImageTo3D', inputs: { model: ['1', 0], image: ['3', 0], mask: ['3', 1], sampling_steps: opts.steps, cfg_scale: opts.cfg, sampling_method: 'heun', seed } },
+        5: { class_type: 'LiToExportPLY', inputs: { gaussians: ['4', 0], filename: `${stem}_lito` } },
+        6: { class_type: 'LiToPreviewPointCloud', inputs: { file_path: ['5', 0] } }
+    };
 };
 
 // history status.messages entries are [type, data] pairs
@@ -68,19 +100,10 @@ const registerLitoGenerate = (events: Events) => {
             if (run !== runCounter) return;
             const uploadedName = uploadJson.name as string;
 
-            // 2. queue the LiTo graph. client_id is REQUIRED: without it ComfyUI does not replay
-            // fully-cached output-node results into history outputs (same image + fixed seed =
-            // cached run = empty outputs). LiToPreviewPointCloud must terminate the graph —
-            // LiToExportPLY is not an output node and a graph ending there is rejected.
-            const seed = opts.seed === -1 ? Math.floor(Math.random() * 2147483647) : opts.seed;
-            const prompt = {
-                1: { class_type: 'LiToLoadModel', inputs: { checkpoint: 'lito_dit_rgba (recommended)', compile: false, precision: 'auto' } },
-                2: { class_type: 'LoadImage', inputs: { image: uploadedName } },
-                3: { class_type: 'LiToPreprocess', inputs: { image: ['2', 0], remove_bg: opts.removeBg, crop: true, fill_ratio: 0.8, keep_optical_axis: true } },
-                4: { class_type: 'LiToImageTo3D', inputs: { model: ['1', 0], image: ['3', 0], mask: ['3', 1], sampling_steps: opts.steps, cfg_scale: opts.cfg, sampling_method: 'heun', seed } },
-                5: { class_type: 'LiToExportPLY', inputs: { gaussians: ['4', 0], filename: `${fileStem(opts.file.name)}_lito` } },
-                6: { class_type: 'LiToPreviewPointCloud', inputs: { file_path: ['5', 0] } }
-            };
+            // 2. queue the graph for the chosen model (see buildPrompt). client_id is REQUIRED:
+            // without it ComfyUI does not replay fully-cached output-node results into history
+            // outputs (same image + fixed seed = cached run = empty outputs).
+            const prompt = buildPrompt(opts, uploadedName);
             const queueRes = await fetch(`${opts.url}/prompt`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -95,9 +118,10 @@ const registerLitoGenerate = (events: Events) => {
             if (run !== runCounter) return;
             if (!queueRes.ok || queueJson?.error) {
                 // missing_node_type comes back with EMPTY node_errors — it is the
-                // missing-ComfyUI-LiTo-install signature
+                // missing-node-pack signature; extra_info.class_type names the missing node
+                // (guard: extra_info may be absent)
                 if (queueJson?.error?.type === 'missing_node_type') {
-                    dialog.setStatus('LiTo nodes missing — check ComfyUI-LiTo install', true);
+                    dialog.setStatus(`${queueJson.error.extra_info?.class_type ?? 'node'} missing — check ComfyUI-LiTo / ComfyUI-Sharp install`, true);
                 } else {
                     dialog.setStatus(`ComfyUI rejected the workflow: ${queueJson?.error?.message ?? `HTTP ${queueRes.status}`}`, true);
                 }
@@ -105,9 +129,11 @@ const registerLitoGenerate = (events: Events) => {
             }
             const promptId = queueJson.prompt_id as string;
 
-            // single persistence point: a reachable, LiTo-capable server is worth remembering
-            // even if the generation later fails
+            // single persistence point: a reachable, capable server (and the model that ran on
+            // it) is worth remembering even if the generation later fails. Persist the CAPTURED
+            // opts.model — never the live select value.
             localStorage.setItem(STORAGE_KEY, opts.url);
+            localStorage.setItem(MODEL_STORAGE_KEY, opts.model);
             dialog.setStatus('Queued…');
 
             // 3. poll history. The response stays {} while the prompt is queued AND while it
@@ -148,14 +174,20 @@ const registerLitoGenerate = (events: Events) => {
                 }
             }
 
-            // 4. import: outputs values carry an ABSOLUTE disk path — take the basename and
-            // fetch the bytes back through ComfyUI's /view endpoint
+            // 4. import: LiTo reports `file_path` (an ABSOLUTE disk path), SHARP reports
+            // `ply_file` (a relative basename — the server appends an epoch-ms timestamp, so the
+            // name cannot be derived client-side). Take the first non-empty string of either,
+            // then its basename (a no-op for SHARP), and fetch the bytes back through ComfyUI's
+            // /view endpoint.
             let filePath = '';
             for (const value of Object.values(entry.outputs ?? {}) as any[]) {
-                if (Array.isArray(value?.file_path) && value.file_path.length > 0) {
-                    filePath = String(value.file_path[0]);
-                    break;
+                for (const arr of [value?.file_path, value?.ply_file]) {
+                    if (Array.isArray(arr) && typeof arr[0] === 'string' && arr[0] !== '') {
+                        filePath = arr[0];
+                        break;
+                    }
                 }
+                if (filePath) break;
             }
             if (!filePath) {
                 dialog.setStatus('Generation finished but ComfyUI returned no PLY path', true);

@@ -1,18 +1,21 @@
-import { BooleanInput, Button, Container, Label, NumericInput, TextInput } from '@playcanvas/pcui';
+import { BooleanInput, Button, Container, Label, NumericInput, SelectInput, TextInput } from '@playcanvas/pcui';
 
-// Generate-from-Image (LiTo) options dialog: image picker, ComfyUI URL and sampling parameters.
-// Shown by registerLitoGenerate (src/lito-generate.ts), which assigns onGenerate/onClosed and
-// drives setBusy/setStatus/hideSilent while the pipeline runs. Unlike the spark export dialog
-// this one stays open across a run, so it uses a callback contract instead of promise-per-show.
+// Generate-from-Image options dialog: model choice (LiTo / SHARP), image picker, ComfyUI URL and
+// per-model parameters. Shown by registerLitoGenerate (src/lito-generate.ts), which assigns
+// onGenerate/onClosed and drives setBusy/setStatus/hideSilent while the pipeline runs. Unlike the
+// spark export dialog this one stays open across a run, so it uses a callback contract instead of
+// promise-per-show.
 // Reuses the .settings-dialog overlay/dialog shell (see src/ui/scss/settings-dialog.scss).
 
 interface LitoGenerateOptions {
+    model: 'lito' | 'sharp';
     file: File;
     url: string;        // trimmed, no trailing slash
-    removeBg: boolean;
-    steps: number;
-    cfg: number;
-    seed: number;       // -1 = randomize at queue time
+    removeBg: boolean;  // lito only
+    steps: number;      // lito only
+    cfg: number;        // lito only
+    seed: number;       // lito only; -1 = randomize at queue time
+    focalMm: number;    // sharp only; 0 = auto
 }
 
 const DEFAULT_COMFY_URL = 'http://127.0.0.1:8190';
@@ -42,6 +45,23 @@ class LitoGenerateDialog extends Container {
         const header = new Container({ id: 'header' });
         header.append(headerText);
         header.dom.title = 'LiTo (Apple Research) — model weights are non-commercial research use';
+
+        // model choice: LiTo (object-centric, SH3) or SHARP (scene-level, SH0, no background
+        // removal). Restored from localStorage at construction (invalid stored values fall back
+        // to 'lito'); the PIPELINE persists opts.model after a successful queue.
+        const storedModel = localStorage.getItem('lito.genModel');
+        const modelLabel = new Label({ class: 'label', text: 'Model' });
+        const modelSelect = new SelectInput({
+            class: 'select',
+            defaultValue: storedModel === 'sharp' || storedModel === 'lito' ? storedModel : 'lito',
+            options: [
+                { v: 'lito', t: 'LiTo (Apple) — object, SH3' },
+                { v: 'sharp', t: 'SHARP (Apple) — scene, SH0' }
+            ]
+        });
+        const modelRow = new Container({ class: 'row' });
+        modelRow.append(modelLabel);
+        modelRow.append(modelSelect);
 
         // image picker: hidden file input, opened by the 'Choose image…' button
         const fileInput = document.createElement('input');
@@ -118,6 +138,15 @@ class LitoGenerateDialog extends Container {
         seedRow.append(seedLabel);
         seedRow.append(seedInput);
 
+        // focal length (SHARP only; drives SharpPredict focal_length_mm, 0 = auto-estimate)
+        const focalLabel = new Label({ class: 'label', text: 'Focal length (mm, 0 = auto)' });
+        const focalInput = new NumericInput({
+            class: 'text-input', value: 30, min: 0, max: 500, precision: 1, step: 0.1
+        });
+        const focalRow = new Container({ class: 'row' });
+        focalRow.append(focalLabel);
+        focalRow.append(focalInput);
+
         // status row (hidden when idle; the pipeline writes run states into it)
         const statusLabel = new Label({ class: 'label', text: '' });
         statusLabel.style.width = '100%';
@@ -127,6 +156,7 @@ class LitoGenerateDialog extends Container {
 
         // content
         const content = new Container({ id: 'content' });
+        content.append(modelRow);
         content.append(imageRow);
         content.append(previewRow);
         content.append(urlRow);
@@ -134,6 +164,7 @@ class LitoGenerateDialog extends Container {
         content.append(stepsRow);
         content.append(cfgRow);
         content.append(seedRow);
+        content.append(focalRow);
         content.append(statusRow);
 
         // footer
@@ -158,6 +189,19 @@ class LitoGenerateDialog extends Container {
             generateButton.enabled = !!selectedFile && !busy;
         };
         updateGenerate();
+
+        // per-model row visibility: lito exposes the sampling parameters, sharp only the focal
+        // length; re-applied on every model change AND on show()
+        const updateModelRows = () => {
+            const sharp = modelSelect.value === 'sharp';
+            removeBgRow.hidden = sharp;
+            stepsRow.hidden = sharp;
+            cfgRow.hidden = sharp;
+            seedRow.hidden = sharp;
+            focalRow.hidden = !sharp;
+        };
+        modelSelect.on('change', updateModelRows);
+        updateModelRows();
 
         chooseButton.on('click', () => {
             // clear so re-choosing the same file still fires 'change'
@@ -187,13 +231,16 @@ class LitoGenerateDialog extends Container {
         // that bubbles after a button handler already closed the dialog) from starting a run
         const tryGenerate = () => {
             if (this.hidden || !selectedFile || busy) return;
+            // both per-model fields are always filled from their inputs, visible or not
             this.onGenerate?.({
+                model: modelSelect.value === 'sharp' ? 'sharp' : 'lito',
                 file: selectedFile,
                 url: urlInput.value.trim().replace(/\/+$/, ''),
                 removeBg: !!removeBgInput.value,
                 steps: stepsInput.value,
                 cfg: cfgInput.value,
-                seed: seedInput.value
+                seed: seedInput.value,
+                focalMm: focalInput.value
             });
         };
 
@@ -266,6 +313,7 @@ class LitoGenerateDialog extends Container {
             if (!busy) {
                 this.setStatus('');
             }
+            updateModelRows();
             this.hidden = false;
             this.dom.focus();
         };
@@ -280,12 +328,14 @@ class LitoGenerateDialog extends Container {
 
         this.setBusy = (value: boolean) => {
             busy = value;
+            modelSelect.enabled = !value;
             chooseButton.enabled = !value;
             urlInput.enabled = !value;
             removeBgInput.enabled = !value;
             stepsInput.enabled = !value;
             cfgInput.enabled = !value;
             seedInput.enabled = !value;
+            focalInput.enabled = !value;
             updateGenerate();
         };
 
