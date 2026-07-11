@@ -23,13 +23,25 @@
             }
         </script>
 
-        <!-- Service worker -->
+        <!-- Service worker. SKIPPED on localhost: during development the SW kept serving a stale
+             app bundle after rebuilds (the export ran OLD code with no visible error), so local
+             serving always loads fresh from dist; any previously-registered SW is torn down. -->
         <script>
             const sw = navigator.serviceWorker;
-            if (sw) {
+            const isLocalDev = ['localhost', '127.0.0.1'].includes(location.hostname);
+            if (sw && !isLocalDev) {
                 sw.register('./sw.js')
                     .then(reg => console.log('service worker registered', reg))
                     .catch(err => console.log('failed to register service worker', err));
+            } else if (sw && isLocalDev) {
+                sw.getRegistrations().then((regs) => {
+                    if (regs.length) {
+                        Promise.all(regs.map(r => r.unregister()))
+                            .then(() => caches.keys())
+                            .then(keys => Promise.all(keys.map(k => caches.delete(k))))
+                            .then(() => console.log('local dev: stale service worker + caches cleared'));
+                    }
+                });
             }
         </script>
     </head>
