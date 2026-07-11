@@ -319,6 +319,7 @@ let audioEl = null;
 // camera flythrough (manifest.camera) — spline path replayed on the shared scene clock
 let camSpline = null, camData = null, camPathActive = false, camOut = new Array(6);
 let camPathMode = 'auto';   // 'auto' | 'manual' | 'off' — resolved in resolvePlayerConfig
+let watermarkEnabled = true; // 3D splat watermark — resolved in resolvePlayerConfig
 let camPathOffsetSec = 0;   // manual mode: clock at 🎥 activation → path replays from ITS OWN frame 0 (stays 0 in auto)
 let playStartMs = 0;   // set in startPlayback()
 
@@ -418,6 +419,14 @@ const resolvePlayerConfig = (manifest) => {
     if (urlCam !== null) console.warn(`unknown campath mode "${urlCam}" — ignored`);
     const mCam = (mp.camera && typeof mp.camera === 'object') ? mp.camera : null;
     camPathMode = (mCam && mCam.autoplay === false) ? 'manual' : 'auto';
+  }
+  // 3D splat watermark: ?watermark=on|off > manifest.player.watermark (boolean) > on
+  const urlWm = urlParams.get('watermark')?.toLowerCase() ?? null;
+  if (urlWm === 'on' || urlWm === 'off') {
+    watermarkEnabled = urlWm === 'on';
+  } else {
+    if (urlWm !== null) console.warn(`unknown watermark value "${urlWm}" — ignored`);
+    watermarkEnabled = mp.watermark !== false;
   }
 };
 
@@ -622,7 +631,7 @@ const endReveal = () => {
 const addWatermark = () => {
   try {
     const wm = textSplats({
-      text: 'SHOOTING LAB · SLFPV.COM',
+      text: 'Shooting Lab',
       font: 'Arial',
       fontSize: 32,                               // canvas px; world size comes from objectScale
       color: new THREE.Color(0.4, 0.4, 0.4),      // dim grey (~40% white) — legible, not shouting
@@ -638,7 +647,7 @@ const addWatermark = () => {
 const startPlayback = () => {
   if (started) return;
   started = true;
-  addWatermark();
+  if (watermarkEnabled) addWatermark();
   startReveal();   // ✨ entrance reveal starts the moment the loading gate opens (covers pop-in)
   playStartMs = performance.now();
   loadEl.style.opacity = '0';

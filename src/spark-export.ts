@@ -292,6 +292,7 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             // when a camera path is exported; "None" writes effect 'off' (sec kept, harmless).
             const playerDefaults = {
                 reveal: { effect: options.revealEffect, sec: options.revealSec },
+                watermark: options.watermark,
                 ...(camera ? { camera: { autoplay: options.cameraMode === 'auto' } } : {})
             };
             zip.file('manifest.json', JSON.stringify({

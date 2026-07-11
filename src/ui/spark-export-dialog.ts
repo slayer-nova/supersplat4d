@@ -1,4 +1,4 @@
-import { Button, Container, Label, NumericInput, SelectInput } from '@playcanvas/pcui';
+import { BooleanInput, Button, Container, Label, NumericInput, SelectInput } from '@playcanvas/pcui';
 
 // Spark player export options dialog: camera-path playback mode, entrance (reveal) effect and
 // duration. Shown by sparkExport (src/spark-export.ts) BEFORE encoding starts; the choices land in
@@ -13,6 +13,7 @@ interface SparkExportOptions {
     cameraMode: SparkCameraMode;
     revealEffect: SparkRevealEffect;
     revealSec: number;
+    watermark: boolean;
 }
 
 class SparkExportDialog extends Container {
@@ -91,12 +92,20 @@ class SparkExportDialog extends Container {
         durationRow.append(durationLabel);
         durationRow.append(durationInput);
 
+        // 3D splat watermark ("Shooting Lab" text splats inside the scene — visible in VR)
+        const watermarkLabel = new Label({ class: 'label', text: '3D watermark' });
+        const watermarkInput = new BooleanInput({ class: 'boolean-input', value: true });
+        const watermarkRow = new Container({ class: 'row' });
+        watermarkRow.append(watermarkLabel);
+        watermarkRow.append(watermarkInput);
+
         // content
         const content = new Container({ id: 'content' });
         content.append(cameraRow);
         content.append(cameraHintRow);
         content.append(effectRow);
         content.append(durationRow);
+        content.append(watermarkRow);
 
         // footer
         const cancelButton = new Button({ class: 'button', text: 'Cancel' });
@@ -129,7 +138,8 @@ class SparkExportDialog extends Container {
             // when the select is disabled (<2 poses) it was reset to 'off' = Don't include
             cameraMode: cameraSelect.value as SparkCameraMode,
             revealEffect: effectSelect.value as SparkRevealEffect,
-            revealSec: durationInput.value
+            revealSec: durationInput.value,
+            watermark: !!watermarkInput.value
         });
 
         exportButton.on('click', () => finish(collect()));
