@@ -234,6 +234,10 @@ class Menu extends Container {
                 await events.invoke('scene.import');
             }
         }, {
+            text: 'Generate from Image...',
+            icon: createSvg(sceneImport),
+            onSelect: () => events.invoke('lito.generate')
+        }, {
             text: localize('menu.file.export'),
             icon: createSvg(sceneExport),
             subMenu: exportMenuPanel
