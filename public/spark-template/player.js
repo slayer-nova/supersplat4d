@@ -497,7 +497,7 @@ const makeRevealModifier = () => {
             if (length(scale) < .05) pos.y = mix(-10., pos.y, pow(s, 2.*h.x));
             pos.xz = mix(pos.xz*.5, pos.xz, pow(s, 2.*h.x));
             float rotationTime = t * (1.0 - s) * 0.2;
-            pos.xz *= rot(rotationTime + pos.y*20.*(1.-s)*exp(-1.*length(pos.xz)));
+            pos.xz *= rot(rotationTime + pos.y*60.*(1.-s)*exp(-1.*length(pos.xz)));   // twist freq x3 (user tuning)
             return vec4(pos, s*s*s*s);
           }
 
@@ -528,7 +528,7 @@ const makeRevealModifier = () => {
           float border = abs(s-l-.5);
           localPos *= 1.-.2*exp(-20.*border);
           vec3 finalScales = mix(scales,vec3(0.002),smoothstep(s-.5,s,l+.5));
-          ${outputs.gsplat}.center = (localPos + .1*noise(localPos.xyz*2.+t*.5)*smoothstep(s-.5,s,l+.5)) / k;
+          ${outputs.gsplat}.center = (localPos + .1*noise(localPos.xyz*6.+t*.5)*smoothstep(s-.5,s,l+.5)) / k;   // noise freq x3 (user tuning: example's *2. waves read too coarse on close-up heads)
           ${outputs.gsplat}.scales = finalScales / k;
           float at = atan(localPos.x,localPos.z)/3.1416;
           ${outputs.gsplat}.rgba *= step(at,t-3.1416);
@@ -544,7 +544,7 @@ const makeRevealModifier = () => {
 
         } else if (${inputs.effectType} == 3) {
           // Unroll Effect: Rotating helix with vertical reveal
-          localPos.xz *= rot((localPos.y*50.-20.)*exp(-t));
+          localPos.xz *= rot((localPos.y*150.-20.)*exp(-t));   // helix freq x3 (user tuning)
           ${outputs.gsplat}.center = localPos * (1.-exp(-t)*2.) / k;
           ${outputs.gsplat}.scales = mix(vec3(0.002),scales,smoothstep(.3,.7,t+localPos.y-2.)) / k;
           ${outputs.gsplat}.rgba = ${inputs.gsplat}.rgba*step(0.,t*.5+localPos.y-.5);
