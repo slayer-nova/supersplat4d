@@ -195,6 +195,7 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             // 1. fetch the player template + vendored libs (served under ./spark-template/)
             const indexRaw = await fetch(`${TEMPLATE_BASE}index.html`).then(r => r.text());
             const player = await fetch(`${TEMPLATE_BASE}player.js`).then(r => r.text());
+            const swSource = await fetch(`${TEMPLATE_BASE}sw.js`).then(r => r.text());
             const vendor = await Promise.all(VENDOR.map(v => fetch(`${TEMPLATE_BASE}vendor/${v}`).then(r => r.arrayBuffer())));
 
             // title rule shared with the demo repackager (em-dash)
@@ -203,6 +204,7 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             const zip = new JSZip();
             zip.file('index.html', index);
             zip.file('player.js', player);
+            zip.file('sw.js', swSource);   // always shipped; registered only when player.offline is on
             VENDOR.forEach((v, i) => zip.file(`vendor/${v}`, vendor[i]));
 
             // 2. encode every object under objects/ (scene order); statics -> objects/<id>.spz,
@@ -296,6 +298,7 @@ const registerSparkExport = (events: Events, scene: Scene) => {
                 zoom: options.zoomMode === 'manual' ?
                     { mode: 'manual', min: options.zoomMin, max: options.zoomMax } :
                     { mode: options.zoomMode },
+                offline: options.offline,
                 ...(camera ? { camera: { autoplay: options.cameraMode === 'auto' } } : {})
             };
             zip.file('manifest.json', JSON.stringify({

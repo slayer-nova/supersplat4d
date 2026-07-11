@@ -18,6 +18,7 @@ interface SparkExportOptions {
     zoomMode: SparkZoomMode;
     zoomMin: number;
     zoomMax: number;
+    offline: boolean;
 }
 
 class SparkExportDialog extends Container {
@@ -131,6 +132,14 @@ class SparkExportDialog extends Container {
         zoomRangeRow.append(zoomMinInput);
         zoomRangeRow.append(zoomMaxInput);
 
+        // offline cache: package service worker — heavy frames/vendor cache per device after the
+        // first visit (repeat views on customer phones don't re-download); shell stays network-first
+        const offlineLabel = new Label({ class: 'label', text: 'Offline cache (SW)' });
+        const offlineInput = new BooleanInput({ class: 'boolean-input', value: true });
+        const offlineRow = new Container({ class: 'row' });
+        offlineRow.append(offlineLabel);
+        offlineRow.append(offlineInput);
+
         // content
         const content = new Container({ id: 'content' });
         content.append(cameraRow);
@@ -140,6 +149,7 @@ class SparkExportDialog extends Container {
         content.append(watermarkRow);
         content.append(zoomRow);
         content.append(zoomRangeRow);
+        content.append(offlineRow);
 
         // footer
         const cancelButton = new Button({ class: 'button', text: 'Cancel' });
@@ -181,7 +191,8 @@ class SparkExportDialog extends Container {
             watermark: !!watermarkInput.value,
             zoomMode: zoomSelect.value as SparkZoomMode,
             zoomMin: Math.min(zoomMinInput.value, zoomMaxInput.value),
-            zoomMax: Math.max(zoomMinInput.value, zoomMaxInput.value)
+            zoomMax: Math.max(zoomMinInput.value, zoomMaxInput.value),
+            offline: !!offlineInput.value
         });
 
         exportButton.on('click', () => finish(collect()));

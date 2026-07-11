@@ -322,6 +322,7 @@ let camPathMode = 'auto';   // 'auto' | 'manual' | 'off' — resolved in resolve
 let watermarkEnabled = true; // 3D splat watermark — resolved in resolvePlayerConfig
 let zoomMode = 'default';    // 'default' | 'adaptive' | 'manual' — resolved in resolvePlayerConfig
 let zoomMin = 0.1, zoomMax = 10;   // used only when zoomMode === 'manual'
+let offlineEnabled = false;  // package service worker (repeat-visit cache) — resolved in resolvePlayerConfig
 let camPathOffsetSec = 0;   // manual mode: clock at 🎥 activation → path replays from ITS OWN frame 0 (stays 0 in auto)
 let playStartMs = 0;   // set in startPlayback()
 
@@ -447,6 +448,24 @@ const resolvePlayerConfig = (manifest) => {
       zoomMode = 'manual'; zoomMin = mZoom.min; zoomMax = mZoom.max;
     }
   }
+  // offline cache (package service worker): ?offline=on|off > manifest.player.offline > off
+  const urlOff = urlParams.get('offline')?.toLowerCase() ?? null;
+  if (urlOff === 'on' || urlOff === 'off') {
+    offlineEnabled = urlOff === 'on';
+  } else {
+    if (urlOff !== null) console.warn(`unknown offline value "${urlOff}" — ignored`);
+    offlineEnabled = mp.offline === true;
+  }
+};
+
+// Register the package service worker (sw.js, shipped in the package) — heavy .spz frames and
+// vendored libs then cache per device for repeat visits / offline. Needs a secure context
+// (https or localhost); silently skipped elsewhere. Shell files stay network-first (see sw.js).
+const registerOfflineCache = () => {
+  if (!offlineEnabled || !('serviceWorker' in navigator) || !window.isSecureContext) return;
+  navigator.serviceWorker.register('./sw.js')
+    .then(() => console.log('offline cache: package service worker registered'))
+    .catch((e) => console.warn('offline cache: service worker registration failed', e));
 };
 
 // Apply the resolved zoom mode to OrbitControls. Called from load() AFTER sceneRadius is known
@@ -831,6 +850,7 @@ async function load() {
   setupCameraPath(manifest);           // v1 AND v2 — manifest.camera is version-independent
   if (manifest.sceneRadius > 0) revealSceneRadius = manifest.sceneRadius;   // reveal scale (exporter-written)
   applyZoomMode();                     // orbit zoom limits (adaptive mode needs sceneRadius, so after it)
+  registerOfflineCache();              // package SW (repeat-visit cache) when the export opted in
   if (manifest.version === 2) return loadScene(manifest);
 
   // v1 (single avatar, progressive: head individual → tail zip) — exactly one animObject; frame 0
