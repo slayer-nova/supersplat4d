@@ -8,12 +8,16 @@ import { BooleanInput, Button, Container, Label, NumericInput, SelectInput } fro
 
 type SparkCameraMode = 'auto' | 'manual' | 'off';
 type SparkRevealEffect = 'spread' | 'magic' | 'unroll' | 'twister' | 'rain' | 'off';
+type SparkZoomMode = 'adaptive' | 'manual' | 'default';
 
 interface SparkExportOptions {
     cameraMode: SparkCameraMode;
     revealEffect: SparkRevealEffect;
     revealSec: number;
     watermark: boolean;
+    zoomMode: SparkZoomMode;
+    zoomMin: number;
+    zoomMax: number;
 }
 
 class SparkExportDialog extends Container {
@@ -99,6 +103,34 @@ class SparkExportDialog extends Container {
         watermarkRow.append(watermarkLabel);
         watermarkRow.append(watermarkInput);
 
+        // orbit zoom limits: adaptive (scene-radius-derived), manual min/max, or the historical
+        // fixed head clamp (0.4–2.0, pan off) — the right pick for a single close-up head
+        const zoomLabel = new Label({ class: 'label', text: 'Camera zoom' });
+        const zoomSelect = new SelectInput({
+            class: 'select',
+            defaultValue: 'adaptive',
+            options: [
+                { v: 'adaptive', t: 'Adaptive (scene size)' },
+                { v: 'manual', t: 'Manual (min/max)' },
+                { v: 'default', t: 'Head default (0.4–2)' }
+            ]
+        });
+        const zoomRow = new Container({ class: 'row' });
+        zoomRow.append(zoomLabel);
+        zoomRow.append(zoomSelect);
+
+        const zoomMinLabel = new Label({ class: 'label', text: 'Zoom min / max' });
+        const zoomMinInput = new NumericInput({
+            class: 'text-input', value: 0.1, min: 0.01, max: 100, precision: 2, step: 0.1
+        });
+        const zoomMaxInput = new NumericInput({
+            class: 'text-input', value: 10, min: 0.02, max: 200, precision: 2, step: 0.5
+        });
+        const zoomRangeRow = new Container({ class: 'row', hidden: true });
+        zoomRangeRow.append(zoomMinLabel);
+        zoomRangeRow.append(zoomMinInput);
+        zoomRangeRow.append(zoomMaxInput);
+
         // content
         const content = new Container({ id: 'content' });
         content.append(cameraRow);
@@ -106,6 +138,8 @@ class SparkExportDialog extends Container {
         content.append(effectRow);
         content.append(durationRow);
         content.append(watermarkRow);
+        content.append(zoomRow);
+        content.append(zoomRangeRow);
 
         // footer
         const cancelButton = new Button({ class: 'button', text: 'Cancel' });
@@ -128,6 +162,11 @@ class SparkExportDialog extends Container {
             durationInput.enabled = value !== 'off';
         });
 
+        // the min/max row only applies to manual zoom
+        zoomSelect.on('change', (value: string) => {
+            zoomRangeRow.hidden = value !== 'manual';
+        });
+
         const finish = (value: SparkExportOptions | null) => {
             this.hidden = true;
             resolvePromise?.(value);
@@ -139,7 +178,10 @@ class SparkExportDialog extends Container {
             cameraMode: cameraSelect.value as SparkCameraMode,
             revealEffect: effectSelect.value as SparkRevealEffect,
             revealSec: durationInput.value,
-            watermark: !!watermarkInput.value
+            watermark: !!watermarkInput.value,
+            zoomMode: zoomSelect.value as SparkZoomMode,
+            zoomMin: Math.min(zoomMinInput.value, zoomMaxInput.value),
+            zoomMax: Math.max(zoomMinInput.value, zoomMaxInput.value)
         });
 
         exportButton.on('click', () => finish(collect()));

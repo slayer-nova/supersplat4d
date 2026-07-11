@@ -293,6 +293,9 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             const playerDefaults = {
                 reveal: { effect: options.revealEffect, sec: options.revealSec },
                 watermark: options.watermark,
+                zoom: options.zoomMode === 'manual'
+                    ? { mode: 'manual', min: options.zoomMin, max: options.zoomMax }
+                    : { mode: options.zoomMode },
                 ...(camera ? { camera: { autoplay: options.cameraMode === 'auto' } } : {})
             };
             zip.file('manifest.json', JSON.stringify({

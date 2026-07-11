@@ -320,6 +320,8 @@ let audioEl = null;
 let camSpline = null, camData = null, camPathActive = false, camOut = new Array(6);
 let camPathMode = 'auto';   // 'auto' | 'manual' | 'off' — resolved in resolvePlayerConfig
 let watermarkEnabled = true; // 3D splat watermark — resolved in resolvePlayerConfig
+let zoomMode = 'default';    // 'default' | 'adaptive' | 'manual' — resolved in resolvePlayerConfig
+let zoomMin = 0.1, zoomMax = 10;   // used only when zoomMode === 'manual'
 let camPathOffsetSec = 0;   // manual mode: clock at 🎥 activation → path replays from ITS OWN frame 0 (stays 0 in auto)
 let playStartMs = 0;   // set in startPlayback()
 
@@ -428,6 +430,39 @@ const resolvePlayerConfig = (manifest) => {
     if (urlWm !== null) console.warn(`unknown watermark value "${urlWm}" — ignored`);
     watermarkEnabled = mp.watermark !== false;
   }
+  // orbit zoom limits: ?zoom=adaptive|default|<min>-<max> > manifest.player.zoom > 'default'
+  // (default = the historical fixed head clamp 0.4–2.0 → old packages behave exactly as before)
+  const urlZoom = urlParams.get('zoom')?.toLowerCase() ?? null;
+  const zoomRange = urlZoom ? urlZoom.match(/^(\d*\.?\d+)-(\d*\.?\d+)$/) : null;
+  if (urlZoom === 'adaptive' || urlZoom === 'default') {
+    zoomMode = urlZoom;
+  } else if (zoomRange) {
+    zoomMode = 'manual'; zoomMin = parseFloat(zoomRange[1]); zoomMax = parseFloat(zoomRange[2]);
+  } else {
+    if (urlZoom !== null) console.warn(`unknown zoom value "${urlZoom}" — ignored`);
+    const mZoom = (mp.zoom && typeof mp.zoom === 'object') ? mp.zoom : null;
+    if (mZoom && (mZoom.mode === 'adaptive' || mZoom.mode === 'default')) {
+      zoomMode = mZoom.mode;
+    } else if (mZoom && mZoom.mode === 'manual' && mZoom.min > 0 && mZoom.max > mZoom.min) {
+      zoomMode = 'manual'; zoomMin = mZoom.min; zoomMax = mZoom.max;
+    }
+  }
+};
+
+// Apply the resolved zoom mode to OrbitControls. Called from load() AFTER sceneRadius is known
+// (adaptive derives its limits from it). 'default' keeps the historical head clamp untouched.
+const applyZoomMode = () => {
+  if (zoomMode === 'adaptive') {
+    const r = Math.max(revealSceneRadius, 0.05);
+    controls.minDistance = Math.max(0.05, r * 0.15);
+    controls.maxDistance = Math.max(2, r * 6);
+    controls.enablePan = true;                     // large scenes need to move off-origin
+  } else if (zoomMode === 'manual') {
+    controls.minDistance = zoomMin;
+    controls.maxDistance = zoomMax;
+    controls.enablePan = true;
+  }
+  // 'default': leave minDistance 0.4 / maxDistance 2.0 / pan off — byte-identical to before
 };
 
 const makeRevealModifier = () => {
@@ -795,6 +830,7 @@ async function load() {
   resolvePlayerConfig(manifest);       // URL > manifest.player > defaults (reveal effect/sec + campath mode)
   setupCameraPath(manifest);           // v1 AND v2 — manifest.camera is version-independent
   if (manifest.sceneRadius > 0) revealSceneRadius = manifest.sceneRadius;   // reveal scale (exporter-written)
+  applyZoomMode();                     // orbit zoom limits (adaptive mode needs sceneRadius, so after it)
   if (manifest.version === 2) return loadScene(manifest);
 
   // v1 (single avatar, progressive: head individual → tail zip) — exactly one animObject; frame 0
