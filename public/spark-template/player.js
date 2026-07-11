@@ -323,6 +323,7 @@ let watermarkEnabled = true; // 3D splat watermark — resolved in resolvePlayer
 let zoomMode = 'default';    // 'default' | 'adaptive' | 'manual' — resolved in resolvePlayerConfig
 let zoomMin = 0.1, zoomMax = 10;   // used only when zoomMode === 'manual'
 let offlineEnabled = false;  // package service worker (repeat-visit cache) — resolved in resolvePlayerConfig
+let maxShClamp = null;       // ?maxsh=0..3 caps SplatMesh.maxSh (null = render whatever the .spz carries)
 let camPathOffsetSec = 0;   // manual mode: clock at 🎥 activation → path replays from ITS OWN frame 0 (stays 0 in auto)
 let playStartMs = 0;   // set in startPlayback()
 
@@ -336,6 +337,7 @@ const clockSec = () => {
 
 const addFrameTo = (o, u8) => {
   const m = new SplatMesh({ fileBytes: u8, fileType: 'spz' });
+  if (maxShClamp !== null) m.maxSh = maxShClamp;   // before the first render builds the generator
   m.visible = (o.meshes.length === 0);
   group.add(m);
   o.meshes.push(m);
@@ -455,6 +457,18 @@ const resolvePlayerConfig = (manifest) => {
   } else {
     if (urlOff !== null) console.warn(`unknown offline value "${urlOff}" — ignored`);
     offlineEnabled = mp.offline === true;
+  }
+  // SH clamp: ?maxsh=N (integer 0..3) caps every SplatMesh's maxSh at construction time —
+  // Spark's maxSh is consumed only when the generator is built, so it MUST be set right after
+  // new SplatMesh(...) (a later assignment silently no-ops without updateGenerator()).
+  const urlMaxSh = urlParams.get('maxsh');
+  if (urlMaxSh !== null) {
+    const msv = urlMaxSh.trim() === '' ? NaN : Number(urlMaxSh);
+    if (Number.isInteger(msv) && msv >= 0 && msv <= 3) {
+      maxShClamp = msv;
+    } else {
+      console.warn(`unknown maxsh value "${urlMaxSh}" — ignored`);
+    }
   }
 };
 
@@ -919,6 +933,7 @@ async function loadScene(manifest) {
   for (const o of statics) {
     const buf = await fetch('./' + o.src).then((r) => { if (!r.ok) throw new Error(o.src + ' ' + r.status); return r.arrayBuffer(); });
     const m = new SplatMesh({ fileBytes: new Uint8Array(buf), fileType: 'spz' });
+    if (maxShClamp !== null) m.maxSh = maxShClamp;   // before the first render builds the generator
     group.add(m);
     revealAdd(m);
     await m.initialized;

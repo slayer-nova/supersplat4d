@@ -4,7 +4,7 @@ import { serializeSpz } from 'spz-js';
 import { ElementType } from './element';
 import { Events } from './events';
 import { Scene } from './scene';
-import { SingleSplat } from './splat-serialize';
+import { SingleSplat, shNames } from './splat-serialize';
 import { State } from './splat-state';
 import { SparkExportDialog } from './ui/spark-export-dialog';
 
@@ -127,6 +127,68 @@ const staticToSpz = async (splat: any): Promise<{ spz: Uint8Array, n: number }> 
     }
     const spz = await serializeSpz({ numPoints: n, shDegree: 0, positions, scales, rotations, alphas, colors, sh: new Float32Array(0) } as any);
     return { spz, n };
+};
+
+// number of SH bands a splat carries, from f_rest_* prop presence: 9 props -> 1, 24 -> 2, 45 -> 3
+const detectShBands = (splat: any): number => {
+    let count = 0;
+    while (count < 45 && splat.splatData.getProp(`f_rest_${count}`)) count++;
+    return ({ 9: 1, 24: 2, 45: 3 } as Record<number, number>)[count] ?? 0;
+};
+
+// SH keep rule (dialog keepSh): 'all' keeps every static that carries f_rest_* props, 'lito' only
+// files whose name marks them LiTo-generated (<stem>_lito.ply, lito_output*.ply), 'off' keeps
+// none. Returns the band count to serialize (0 -> the unchanged SH0 staticToSpz path).
+const keptShBands = (splat: any, keepSh: 'off' | 'lito' | 'all'): number => {
+    if (keepSh !== 'all' && keepSh !== 'lito') return 0;
+    if (keepSh === 'lito' && !String(splat.filename || splat.name || '').toLowerCase().includes('lito')) return 0;
+    return detectShBands(splat);
+};
+
+// SH-preserving variant of staticToSpz (LiTo objects). Same baked SingleSplat skeleton — palette
+// edits, SH rotation (getSHRot) and color tint are all inherited from the serializer — with three
+// differences: f_rest_* members are requested, the editor's channel-major planar SH layout
+// (f_rest_[ch * coeffs + c]) is transposed to spz-js's interleaved per-coefficient order
+// ([c0.r, c0.g, c0.b, c1.r, ...]), and serializeSpz gets the real shDegree. staticToSpz (SH0
+// path) stays byte-for-byte untouched.
+const staticToSpzSh = async (splat: any, bands: number): Promise<{ spz: Uint8Array, n: number, shDegree: number }> => {
+    const coeffs = ({ 1: 3, 2: 8, 3: 15 } as Record<number, number>)[bands];
+    const state = splat.splatData.getProp('state') as Uint8Array | undefined;
+    const total = splat.splatData.numSplats;
+    const single = new SingleSplat([...MEMBERS, ...shNames.slice(0, coeffs * 3)], { bakeFullWorldTransform: true });
+    let n = 0;
+    for (let i = 0; i < total; i++) {
+        if (!state || (state[i] & State.deleted) === 0) n++;
+    }
+    const positions = new Float32Array(n * 3);
+    const scales = new Float32Array(n * 3);
+    const colors = new Float32Array(n * 3);
+    const alphas = new Float32Array(n);
+    const rotations = new Float32Array(n * 4);
+    const sh = new Float32Array(n * coeffs * 3);
+    let k = 0;
+    for (let i = 0; i < total; i++) {
+        if (state && (state[i] & State.deleted) !== 0) continue;
+        single.read(splat, i);
+        const d = single.data;
+        const l2s = d.x * d.x + d.z * d.z;
+        if (l2s > exportMaxL2) exportMaxL2 = l2s;
+        positions[k * 3] = d.x; positions[k * 3 + 1] = d.y; positions[k * 3 + 2] = d.z;
+        scales[k * 3] = d.scale_0; scales[k * 3 + 1] = d.scale_1; scales[k * 3 + 2] = d.scale_2;
+        colors[k * 3] = d.f_dc_0; colors[k * 3 + 1] = d.f_dc_1; colors[k * 3 + 2] = d.f_dc_2;
+        alphas[k] = d.opacity;
+        const w = d.rot_0, x = d.rot_1, y = d.rot_2, z = d.rot_3;
+        const l = Math.hypot(w, x, y, z) || 1;
+        rotations[k * 4] = x / l; rotations[k * 4 + 1] = y / l; rotations[k * 4 + 2] = z / l; rotations[k * 4 + 3] = w / l;
+        for (let c = 0; c < coeffs; c++) {
+            for (let ch = 0; ch < 3; ch++) {
+                sh[(k * coeffs + c) * 3 + ch] = d[`f_rest_${ch * coeffs + c}`];
+            }
+        }
+        k++;
+    }
+    const spz = await serializeSpz({ numPoints: n, shDegree: bands, positions, scales, rotations, alphas, colors, sh } as any);
+    return { spz, n, shDegree: bands };
 };
 
 const registerSparkExport = (events: Events, scene: Scene) => {
@@ -254,9 +316,13 @@ const registerSparkExport = (events: Events, scene: Scene) => {
 
                     manifestObjects.push({ id, type: 'animated', dir: `objects/${id}`, frames: frames.length, fps, headCount: head });
                 } else {
-                    const { spz, n } = await staticToSpz(splat);
+                    // SH-kept statics (see keptShBands) go through staticToSpzSh; everything else
+                    // takes the unchanged compact SH0 path. shDegree is informational for SH
+                    // statics only (the .spz header is authoritative for the player).
+                    const shBands = keptShBands(splat, options.keepSh);
+                    const { spz, n } = shBands > 0 ? await staticToSpzSh(splat, shBands) : await staticToSpz(splat);
                     zip.file(`objects/${id}.spz`, spz);
-                    manifestObjects.push({ id, type: 'static', src: `objects/${id}.spz`, numSplats: n });
+                    manifestObjects.push({ id, type: 'static', src: `objects/${id}.spz`, numSplats: n, ...(shBands > 0 ? { shDegree: shBands } : {}) });
                     done++;
                     events.fire('progressUpdate', { text: `Encoding ${id}`, progress: Math.round(done / totalUnits * 92) });
                 }

@@ -8,11 +8,13 @@ import { BooleanInput, Button, Container, Label, NumericInput, SelectInput } fro
 
 type SparkCameraMode = 'auto' | 'manual' | 'off';
 type SparkRevealEffect = 'spread' | 'magic' | 'unroll' | 'twister' | 'rain' | 'off';
+type SparkKeepSh = 'off' | 'lito' | 'all';
 type SparkZoomMode = 'adaptive' | 'manual' | 'default';
 
 interface SparkExportOptions {
     cameraMode: SparkCameraMode;
     revealEffect: SparkRevealEffect;
+    keepSh: SparkKeepSh;
     revealSec: number;
     watermark: boolean;
     zoomMode: SparkZoomMode;
@@ -83,6 +85,22 @@ class SparkExportDialog extends Container {
         effectRow.append(effectLabel);
         effectRow.append(effectSelect);
 
+        // keep view-dependent SH color on statics that carry f_rest_* props (LiTo objects);
+        // Off = every static ships compact SH0 (the pre-feature behavior)
+        const keepShLabel = new Label({ class: 'label', text: 'Keep SH (view-dep. color)' });
+        const keepShSelect = new SelectInput({
+            class: 'select',
+            defaultValue: 'lito',
+            options: [
+                { v: 'off', t: 'Off (smallest files)' },
+                { v: 'lito', t: 'LiTo objects only' },
+                { v: 'all', t: 'All statics that have SH' }
+            ]
+        });
+        const keepShRow = new Container({ class: 'row' });
+        keepShRow.append(keepShLabel);
+        keepShRow.append(keepShSelect);
+
         // effect duration
         const durationLabel = new Label({ class: 'label', text: 'Duration (s)' });
         const durationInput = new NumericInput({
@@ -145,6 +163,7 @@ class SparkExportDialog extends Container {
         content.append(cameraRow);
         content.append(cameraHintRow);
         content.append(effectRow);
+        content.append(keepShRow);
         content.append(durationRow);
         content.append(watermarkRow);
         content.append(zoomRow);
@@ -187,6 +206,7 @@ class SparkExportDialog extends Container {
             // when the select is disabled (<2 poses) it was reset to 'off' = Don't include
             cameraMode: cameraSelect.value as SparkCameraMode,
             revealEffect: effectSelect.value as SparkRevealEffect,
+            keepSh: keepShSelect.value as SparkKeepSh,
             revealSec: durationInput.value,
             watermark: !!watermarkInput.value,
             zoomMode: zoomSelect.value as SparkZoomMode,
@@ -227,6 +247,7 @@ class SparkExportDialog extends Container {
                 cameraSelect.enabled = hasCameraPath;
                 cameraHintRow.hidden = hasCameraPath;
                 effectSelect.value = 'spread';
+                keepShSelect.value = 'lito';
                 durationInput.value = 4.5;
                 durationInput.enabled = true;
 

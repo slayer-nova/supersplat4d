@@ -1140,6 +1140,7 @@ export {
     Writer,
     SingleSplat,
     SplatTransformCache,
+    shNames,
     serializePly,
     serializePlyCompressed,
     serializeSplat,
