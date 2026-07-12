@@ -337,8 +337,10 @@ renderer.xr.addEventListener('sessionend', () => {
 // button. Touches arrive on the dom-overlay (document.body, requested in enterXR):
 //   1 finger  — drag the whole scene on the horizontal plane (screen-x → camera-right,
 //               drag UP → push away along the camera's forward-on-floor direction)
-//   2 fingers — pinch to scale (about the scene anchor), twist to rotate around world Y,
-//               and the midpoint drag keeps moving the scene while pinching
+//   2 fingers — pinch to scale (about the scene anchor); the midpoint drag keeps moving
+//               the scene while pinching (NO rotation here — pinching stays accident-free)
+//   3 fingers — horizontal drag rotates the scene around world Y (turntable; a full screen
+//               width of travel ≈ 216°)
 // Gestures only run in passthrough AR (VR uses controller grips; desktop never presents), and
 // a touch that STARTS on a button (Recenter/sound) is left alone so the overlay UI keeps working.
 let arTouch = null;   // gesture start refs; null = no active gesture
@@ -370,13 +372,20 @@ const arTouchRefs = (e) => {
   if (t.length === 1) {
     return { mode: 'one', x: t[0].clientX, y: t[0].clientY, pos: group.position.clone() };
   }
+  if (t.length >= 3) {
+    // 3-finger turntable: track the centroid's horizontal travel only
+    return {
+      mode: 'three',
+      x: (t[0].clientX + t[1].clientX + t[2].clientX) / 3,
+      quat: group.quaternion.clone()
+    };
+  }
   const dx = t[1].clientX - t[0].clientX, dy = t[1].clientY - t[0].clientY;
   return {
     mode: 'two',
     midX: (t[0].clientX + t[1].clientX) / 2, midY: (t[0].clientY + t[1].clientY) / 2,
     dist: Math.max(10, Math.hypot(dx, dy)),
-    angle: Math.atan2(dy, dx),
-    pos: group.position.clone(), scale: group.scale.x, quat: group.quaternion.clone()
+    pos: group.position.clone(), scale: group.scale.x
   };
 };
 
@@ -400,12 +409,9 @@ document.body.addEventListener('touchmove', (e) => {
       arTouch.pos.z + _tRight.z * dx * wpp + _tFwd.z * -dy * wpp);
   } else if (arTouch.mode === 'two' && t.length >= 2) {
     const ddx = t[1].clientX - t[0].clientX, ddy = t[1].clientY - t[0].clientY;
-    // pinch → scale about the scene anchor (position untouched)
+    // pinch → scale about the scene anchor (position untouched, rotation untouched)
     const s = Math.min(20, Math.max(0.05, arTouch.scale * (Math.hypot(ddx, ddy) / arTouch.dist)));
     group.scale.setScalar(s);
-    // twist → rotate around world Y about the anchor (screen y points down, negate for CW=CW)
-    _tQ.setFromAxisAngle(_tUp, -(Math.atan2(ddy, ddx) - arTouch.angle));
-    group.quaternion.multiplyQuaternions(_tQ, arTouch.quat);
     // midpoint drag → keep moving on the plane while pinching
     const mx = (t[0].clientX + t[1].clientX) / 2 - arTouch.midX;
     const my = (t[0].clientY + t[1].clientY) / 2 - arTouch.midY;
@@ -413,6 +419,13 @@ document.body.addEventListener('touchmove', (e) => {
       arTouch.pos.x + _tRight.x * mx * wpp + _tFwd.x * -my * wpp,
       arTouch.pos.y,
       arTouch.pos.z + _tRight.z * mx * wpp + _tFwd.z * -my * wpp);
+  } else if (arTouch.mode === 'three' && t.length >= 3) {
+    // turntable: centroid horizontal travel → yaw around world Y about the anchor.
+    // Drag right → the scene's front swings right (flip the sign here if it feels inverted).
+    const cx = (t[0].clientX + t[1].clientX + t[2].clientX) / 3;
+    const yaw = ((cx - arTouch.x) / Math.max(1, window.innerWidth)) * Math.PI * 1.2;
+    _tQ.setFromAxisAngle(_tUp, yaw);
+    group.quaternion.multiplyQuaternions(_tQ, arTouch.quat);
   }
 }, { passive: false });
 
