@@ -233,13 +233,15 @@ const isPassthrough = () => {
   try { return !!s && s.environmentBlendMode && s.environmentBlendMode !== 'opaque'; } catch (e) { return false; }
 };
 
-// Controllers — grip(squeeze) to grab (move+rotate); both grips to scale+rotate+move; A/X/B/Y to reset.
+// Controllers — grip(squeeze) to grab (TRANSLATE only; orientation stays put); both grips to
+// scale+rotate+move; thumbstick flick = snap-turn the view (VR only); A/X/B/Y to reset.
 const controllers = [renderer.xr.getController(0), renderer.xr.getController(1)];
 const _ray = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -0.25)]);
 controllers.forEach((c) => { c.add(new THREE.Line(_ray, new THREE.LineBasicMaterial({ color: 0x9b8cff }))); scene.add(c); });
 const gripping = [false, false];
 let grabMode = 'none';   // 'none' | 'one' | 'two'
 let two = null;          // two-hand start refs
+let one = null;          // one-hand start refs (translate-only grab)
 const _p0 = new THREE.Vector3(), _p1 = new THREE.Vector3(), _v = new THREE.Vector3(), _q = new THREE.Quaternion();
 
 // Recenter — snap the avatar ~0.9 m in front of wherever the viewer is looking, facing them, scale 1.
@@ -255,13 +257,19 @@ const recenter = () => {
   group.position.set(_cp.x + _cd.x * DIST, _cp.y - 0.15, _cp.z + _cd.z * DIST);
   group.scale.setScalar(1);
   group.rotation.set(0, Math.atan2(_cp.x - group.position.x, _cp.z - group.position.z), 0); // +Z faces viewer
-  grabMode = 'none'; two = null; gripping[0] = gripping[1] = false;
+  grabMode = 'none'; two = null; one = null; gripping[0] = gripping[1] = false;
 };
 recenterBtn.addEventListener('click', recenter);
 const onGrip = () => {
   const n = (gripping[0] ? 1 : 0) + (gripping[1] ? 1 : 0);
   if (n === 1) {
-    controllers[gripping[0] ? 0 : 1].attach(group);  // group follows this controller (translate + rotate)
+    // single grip = TRANSLATE ONLY (no attach): wrist rotation used to leak into the scene
+    // and fight the thumbstick snap turn — track the controller's position delta per frame
+    // instead, so the scene keeps its orientation while you carry it.
+    const i = gripping[0] ? 0 : 1;
+    scene.attach(group);
+    controllers[i].getWorldPosition(_p0);
+    one = { idx: i, start: _p0.clone(), pos: group.position.clone() };
     grabMode = 'one'; two = null;
   } else if (n === 2) {
     scene.attach(group);                             // leave single-hand; drive scale/rotate/move per-frame
@@ -269,10 +277,10 @@ const onGrip = () => {
     two = { dist: _p0.distanceTo(_p1) || 1e-4, scale: group.scale.x,
             mid: _p0.clone().add(_p1).multiplyScalar(0.5), pos: group.position.clone(),
             vec: _p1.clone().sub(_p0).normalize(), quat: group.quaternion.clone() };
-    grabMode = 'two';
+    grabMode = 'two'; one = null;
   } else {
     scene.attach(group);                             // release — the avatar stays where you left it
-    grabMode = 'none'; two = null;
+    grabMode = 'none'; two = null; one = null;
   }
 };
 controllers.forEach((c, i) => {
@@ -288,6 +296,50 @@ const pollReset = () => {
     if (gp && (gp.buttons[4]?.pressed || gp.buttons[5]?.pressed)) pressed = true; // A/X or B/Y
   }
   if (pressed && !resetLatch) { resetLatch = true; recenter(); } else if (!pressed) resetLatch = false;
+};
+
+// Thumbstick snap turn (VR only) — flick a controller stick left/right to rotate the VIEW
+// by SNAP_TURN_DEG, the standard comfort locomotion. Implemented the official WebXR way:
+// rotate the reference space about the viewer's current position (getOffsetReferenceSpace),
+// so controllers/grabs stay consistent and the scene itself never moves in world space.
+// Skipped in passthrough AR — rotating the view against the real world is disorienting.
+const SNAP_TURN_DEG = 30;
+const SNAP_ENGAGE = 0.7, SNAP_RELEASE = 0.3;   // hysteresis on the stick's X axis
+let snapLatch = false;
+const _snapPos = new THREE.Vector3();
+const pollSnapTurn = () => {
+  const s = renderer.xr.getSession();
+  if (!s || isPassthrough()) return;
+  let x = 0;
+  for (const src of s.inputSources) {
+    const ax = src.gamepad?.axes;
+    if (!ax) continue;
+    // xr-standard: thumbstick on axes[2]; some devices report on axes[0] (touchpad)
+    const v = (ax.length > 2 ? ax[2] : 0) || ax[0] || 0;
+    if (Math.abs(v) > Math.abs(x)) x = v;
+  }
+  if (Math.abs(x) < SNAP_RELEASE) { snapLatch = false; return; }
+  if (snapLatch || Math.abs(x) < SNAP_ENGAGE) return;
+  snapLatch = true;
+  const ref = renderer.xr.getReferenceSpace();
+  if (!ref || !ref.getOffsetReferenceSpace || typeof XRRigidTransform === 'undefined') return;
+  renderer.xr.getCamera().getWorldPosition(_snapPos);
+  // stick right = turn right: rotate the reference space by -angle about world Y through
+  // the viewer position: offset = T(pos) * R * T(-pos) as an XRRigidTransform
+  const angle = (x > 0 ? 1 : -1) * SNAP_TURN_DEG * Math.PI / 180;
+  const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
+  const p = _snapPos.clone().sub(_snapPos.clone().applyQuaternion(q));
+  renderer.xr.setReferenceSpace(ref.getOffsetReferenceSpace(new XRRigidTransform(
+    { x: p.x, y: p.y, z: p.z },
+    { x: q.x, y: q.y, z: q.z, w: q.w })));
+};
+const updateOneHand = () => {
+  if (grabMode !== 'one' || !one) return;
+  controllers[one.idx].getWorldPosition(_p0);
+  group.position.set(
+    one.pos.x + (_p0.x - one.start.x),
+    one.pos.y + (_p0.y - one.start.y),
+    one.pos.z + (_p0.z - one.start.z));
 };
 const updateTwoHand = () => {
   if (grabMode !== 'two' || !two) return;
@@ -1066,7 +1118,7 @@ const startPlayback = () => {
       controls.target.set(camOut[3], camOut[4], camOut[5]);
       camera.lookAt(controls.target);
     }
-    if (renderer.xr.isPresenting) { pollReset(); updateTwoHand(); } // grab/scale + reset in XR
+    if (renderer.xr.isPresenting) { pollReset(); pollSnapTurn(); updateOneHand(); updateTwoHand(); } // grab/scale + reset + snap turn in XR
     else if (flyActive && !camPathActive) flyControls.update(camera, camera); // 🕹 fly — SparkControls tracks its own clock (moves the camera object itself)
     else if (!camPathActive) controls.update();                     // headset owns the camera in XR; OrbitControls.update() ignores 'enabled' + clamps radius → skip while the path owns the camera
     renderer.render(scene, camera);
