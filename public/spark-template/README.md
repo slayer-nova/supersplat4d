@@ -33,6 +33,8 @@ https://<host>/<path>/index.html?reveal=magic&revealsec=6&maxsh=0
 - **🎥** — 相機路徑播放/停止(`campath=manual` 或匯出選 Manual 時出現)
 - **🕹** — 自由飛行模式(WASD + 滑鼠)/ 回到軌道環繞
 - **VR / AR** — WebXR 進入鍵(需 https 與支援的裝置;VR 內可抓取整個場景移動)
+- **手機 AR 手勢** — 單指拖曳 = 在地面上移動整個場景(上滑推遠、下滑拉近);雙指捏合 =
+  縮放;雙指旋轉 = 繞垂直軸轉向;Recenter 按鈕 = 拉回眼前重置
 - 滑鼠拖曳 = 環繞;滾輪/雙指 = 縮放;右鍵拖曳 = 平移(`zoom=default` 時停用平移)
 
 ## 常用組合範例

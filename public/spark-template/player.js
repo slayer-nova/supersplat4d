@@ -329,7 +329,100 @@ renderer.xr.addEventListener('sessionend', () => {
   arLightActive = false;
   lightProbe = null;
   resetArLightIdentity();
+  arTouch = null;                        // drop any in-flight mobile-AR touch gesture
 });
+
+// ---- 📱 Mobile AR touch gestures (dom-overlay) ---------------------------------------------
+// Phone AR has no controllers, so before this block the only placement tool was the Recenter
+// button. Touches arrive on the dom-overlay (document.body, requested in enterXR):
+//   1 finger  — drag the whole scene on the horizontal plane (screen-x → camera-right,
+//               drag UP → push away along the camera's forward-on-floor direction)
+//   2 fingers — pinch to scale (about the scene anchor), twist to rotate around world Y,
+//               and the midpoint drag keeps moving the scene while pinching
+// Gestures only run in passthrough AR (VR uses controller grips; desktop never presents), and
+// a touch that STARTS on a button (Recenter/sound) is left alone so the overlay UI keeps working.
+let arTouch = null;   // gesture start refs; null = no active gesture
+const _tRight = new THREE.Vector3(), _tFwd = new THREE.Vector3(), _tUp = new THREE.Vector3(0, 1, 0);
+const _tQ = new THREE.Quaternion();
+
+const arTouchActive = (e) => renderer.xr.isPresenting && isPassthrough() &&
+  grabMode === 'none' && !(e.target && e.target.closest && e.target.closest('button'));
+
+// camera-relative horizontal basis (both y-zeroed; degenerate look-straight-down falls back)
+const arTouchBasis = () => {
+  const cam = renderer.xr.getCamera();
+  cam.getWorldDirection(_tFwd); _tFwd.y = 0;
+  if (_tFwd.lengthSq() < 1e-6) _tFwd.set(0, 0, -1); else _tFwd.normalize();
+  _tRight.crossVectors(_tFwd, _tUp).normalize();  // camera right = fwd × up (facing -Z → +X)
+  return cam;
+};
+
+// meters per screen pixel, proportional to how far the scene anchor is from the viewer —
+// a drag moves the scene the same VISUAL amount whether it is 0.5 m or 4 m away
+const arWorldPerPx = (cam) => {
+  cam.getWorldPosition(_cp);
+  const dist = Math.max(0.4, _cp.distanceTo(group.position));
+  return (dist * 1.6) / Math.max(1, window.innerHeight);
+};
+
+const arTouchRefs = (e) => {
+  const t = e.touches;
+  if (t.length === 1) {
+    return { mode: 'one', x: t[0].clientX, y: t[0].clientY, pos: group.position.clone() };
+  }
+  const dx = t[1].clientX - t[0].clientX, dy = t[1].clientY - t[0].clientY;
+  return {
+    mode: 'two',
+    midX: (t[0].clientX + t[1].clientX) / 2, midY: (t[0].clientY + t[1].clientY) / 2,
+    dist: Math.max(10, Math.hypot(dx, dy)),
+    angle: Math.atan2(dy, dx),
+    pos: group.position.clone(), scale: group.scale.x, quat: group.quaternion.clone()
+  };
+};
+
+document.body.addEventListener('touchstart', (e) => {
+  if (!arTouchActive(e)) return;
+  arTouch = arTouchRefs(e);       // (re)base on every touch-count change
+  e.preventDefault();
+}, { passive: false });
+
+document.body.addEventListener('touchmove', (e) => {
+  if (!arTouch || !arTouchActive(e)) return;
+  e.preventDefault();
+  const t = e.touches;
+  const cam = arTouchBasis();
+  const wpp = arWorldPerPx(cam);
+  if (arTouch.mode === 'one' && t.length >= 1) {
+    const dx = t[0].clientX - arTouch.x, dy = t[0].clientY - arTouch.y;
+    group.position.set(
+      arTouch.pos.x + _tRight.x * dx * wpp + _tFwd.x * -dy * wpp,
+      arTouch.pos.y,
+      arTouch.pos.z + _tRight.z * dx * wpp + _tFwd.z * -dy * wpp);
+  } else if (arTouch.mode === 'two' && t.length >= 2) {
+    const ddx = t[1].clientX - t[0].clientX, ddy = t[1].clientY - t[0].clientY;
+    // pinch → scale about the scene anchor (position untouched)
+    const s = Math.min(20, Math.max(0.05, arTouch.scale * (Math.hypot(ddx, ddy) / arTouch.dist)));
+    group.scale.setScalar(s);
+    // twist → rotate around world Y about the anchor (screen y points down, negate for CW=CW)
+    _tQ.setFromAxisAngle(_tUp, -(Math.atan2(ddy, ddx) - arTouch.angle));
+    group.quaternion.multiplyQuaternions(_tQ, arTouch.quat);
+    // midpoint drag → keep moving on the plane while pinching
+    const mx = (t[0].clientX + t[1].clientX) / 2 - arTouch.midX;
+    const my = (t[0].clientY + t[1].clientY) / 2 - arTouch.midY;
+    group.position.set(
+      arTouch.pos.x + _tRight.x * mx * wpp + _tFwd.x * -my * wpp,
+      arTouch.pos.y,
+      arTouch.pos.z + _tRight.z * mx * wpp + _tFwd.z * -my * wpp);
+  }
+}, { passive: false });
+
+const arTouchEnd = (e) => {
+  if (!arTouch) return;
+  // fingers lifted mid-gesture: rebase on what remains (2→1 keeps dragging seamlessly)
+  arTouch = e.touches.length > 0 && arTouchActive(e) ? arTouchRefs(e) : null;
+};
+document.body.addEventListener('touchend', arTouchEnd);
+document.body.addEventListener('touchcancel', arTouchEnd);
 
 // ---- 💡 AR environment lighting (WebXR light-estimation → SplatEdit grading) ---------------
 // In immersive-ar on Android (Chrome/ARCore) the player estimates the real room's lighting per
