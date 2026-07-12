@@ -21,6 +21,7 @@ interface SparkExportOptions {
     zoomMin: number;
     zoomMax: number;
     offline: boolean;
+    arLight: boolean;
 }
 
 class SparkExportDialog extends Container {
@@ -158,6 +159,15 @@ class SparkExportDialog extends Container {
         offlineRow.append(offlineLabel);
         offlineRow.append(offlineInput);
 
+        // AR environment lighting: in AR the player estimates the real room's light per frame
+        // (Android ARCore light-estimation) and grades every splat to match — brightness, color
+        // temperature, plus a directional accent. Unsupported devices (Quest/desktop) silently no-op.
+        const arLightLabel = new Label({ class: 'label', text: 'AR environment lighting' });
+        const arLightInput = new BooleanInput({ class: 'boolean-input', value: true });
+        const arLightRow = new Container({ class: 'row' });
+        arLightRow.append(arLightLabel);
+        arLightRow.append(arLightInput);
+
         // content
         const content = new Container({ id: 'content' });
         content.append(cameraRow);
@@ -169,6 +179,7 @@ class SparkExportDialog extends Container {
         content.append(zoomRow);
         content.append(zoomRangeRow);
         content.append(offlineRow);
+        content.append(arLightRow);
 
         // footer
         const cancelButton = new Button({ class: 'button', text: 'Cancel' });
@@ -212,7 +223,8 @@ class SparkExportDialog extends Container {
             zoomMode: zoomSelect.value as SparkZoomMode,
             zoomMin: Math.min(zoomMinInput.value, zoomMaxInput.value),
             zoomMax: Math.max(zoomMinInput.value, zoomMaxInput.value),
-            offline: !!offlineInput.value
+            offline: !!offlineInput.value,
+            arLight: !!arLightInput.value
         });
 
         exportButton.on('click', () => finish(collect()));

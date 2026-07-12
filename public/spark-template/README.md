@@ -22,6 +22,10 @@ https://<host>/<path>/index.html?reveal=magic&revealsec=6&maxsh=0
 | `zoom` | `adaptive` `default` `<min>-<max>` | `default` | 滑鼠/雙指縮放範圍:`adaptive` 依場景大小自適應、`default` 固定 0.4–2(單顆頭像適用)、自訂如 `zoom=0.1-50` |
 | `offline` | `on` `off` | `off` | 離線快取(Service Worker):`on` 之後重複觀看不需重新下載大檔(需 https)。匯出時勾了 Offline cache 的包預設就是開的 |
 | `maxsh` | `0` `1` `2` `3` | 不鉗制 | 上限球諧(SH)階數。含 SH3 物件(如 LiTo 生成物)的包在手機跑不動時,加 `maxsh=0` 直接降回純色渲染,不用重新匯出 |
+| `arlight` | `on` `off` | 跟隨匯出設定(新匯出的包預設 on,經 `manifest.player.arLight`;舊包/未設定時預設 off) | AR 模式讀取手機環境光(Android),讓模型亮度/色溫貼合現場;Quest/不支援的裝置自動忽略 |
+
+> 除錯:加 `arlightdebug=1` 可在桌面(不進 AR)強制開啟環境光分級,以合成的亮度/色溫/光向
+> 慢速掃描驗證效果;與 `arlight` 開關無關,兩者可同時使用。
 
 ## 頁面上的控制
 
@@ -39,6 +43,7 @@ https://<host>/<path>/index.html?reveal=magic&revealsec=6&maxsh=0
 ?campath=off&watermark=off           乾淨展示模式
 ?zoom=0.05-100                       完全放開縮放範圍
 ?offline=on                          強制開啟離線快取
+?arlight=on                          舊包也強制開啟 AR 環境光(需支援的 Android 裝置)
 ```
 
 ---

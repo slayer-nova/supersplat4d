@@ -12,7 +12,7 @@
 // audio-owning object drives its frame index from the soundtrack so A/V stay in sync.
 
 import * as THREE from 'three';
-import { SparkRenderer, SplatMesh, SparkControls, textSplats, dyno } from '@sparkjsdev/spark';
+import { SparkRenderer, SplatMesh, SparkControls, textSplats, dyno, SplatEdit, SplatEditSdf, SplatEditSdfType, SplatEditRgbaBlendMode } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import JSZip from 'jszip';
 
@@ -172,11 +172,31 @@ const enterXR = async (mode) => {
   if (!navigator.xr) return;
   try {
     const session = await navigator.xr.requestSession(mode, {
-      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'],
+      // 'light-estimation' is optional = harmless where unsupported; only Android AR grants it
+      optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay', 'light-estimation'],
       domOverlay: { root: document.body }   // lets our DOM Recenter button show + be tappable in mobile AR
     });
     renderer.xr.setReferenceSpaceType('local-floor');
     await renderer.xr.setSession(session);
+    // 💡 AR environment lighting — request the probe only AFTER setSession resolved (a throw
+    // between requestSession and setSession would abort AR entry on exactly the platforms that
+    // must silently no-op). Where requestLightProbe is absent entirely (Quest without the
+    // lighting-estimation module, Safari/visionOS) the call throws a SYNCHRONOUS TypeError that
+    // a plain .catch() never sees — hence the typeof guard + try/catch. VR never grants a probe.
+    if (mode === 'immersive-ar' && arLightEnabled && arLightLayers) {
+      let probe = null;
+      if (typeof session.requestLightProbe === 'function') {
+        try { probe = await session.requestLightProbe(); } catch (e2) { probe = null; }
+      }
+      if (!probe) {
+        console.log('AR light estimation unavailable — skipping');
+      } else if (renderer.xr.getSession() === session && !session.ended) {
+        // (the user may have exited during the await — activating then would leak the flags)
+        resetArLightIdentity();   // start neutral until the first estimate lands
+        lightProbe = probe;
+        arLightActive = true;
+      }
+    }
   } catch (e) { console.warn('XR session failed', mode, e); }
 };
 const vrBtn = document.getElementById('enter-vr');
@@ -302,7 +322,168 @@ renderer.xr.addEventListener('sessionend', () => {
   xrUI.style.display = 'flex';           // restore Enter VR/AR
   recenterBtn.style.display = 'none';
   if (navBtn) navBtn.style.display = 'block';
+  // 💡 AR environment lighting — stop applying estimates and return the layers to identity so
+  // the room's grading never leaks past the session. Layers stay ATTACHED (created once at load;
+  // detaching would kill ?arlightdebug=1 grading after one XR round-trip — harmless there anyway,
+  // the synthetic estimate rewrites the colors every frame). No probe in VR → no-op reset.
+  arLightActive = false;
+  lightProbe = null;
+  resetArLightIdentity();
 });
+
+// ---- 💡 AR environment lighting (WebXR light-estimation → SplatEdit grading) ---------------
+// In immersive-ar on Android (Chrome/ARCore) the player estimates the real room's lighting per
+// frame and grades ALL splats (statics + avatar frame meshes) to match: a huge MULTIPLY sphere
+// applies brightness + color temperature uniformly, and an offset ADD_RGBA sphere adds a soft
+// directional accent on the side facing the primary light. Both SplatEdits live directly under
+// the root group WITHOUT a SplatMesh ancestor → Spark treats them as GLOBAL edits hitting every
+// editable mesh; the SDF spheres are THREE children of their edit so grab/recenter/scale carry
+// them with the scene. Layers are created ONCE at load with identity values (ambient white/1 —
+// MULTIPLY identity; primary black/0 — ADD identity) so the one-time per-mesh dyno-generator
+// rebuild happens behind the loading bar, not at AR entry; activation only flips flags + writes
+// colors (uniform-only updates). Devices without light-estimation (Quest, desktop) silently
+// no-op. ?arlightdebug=1 drives the same layers with a synthetic sweep for desktop tuning.
+const AR_SH_L0 = 0.886227;         // SH L0 basis constant: irradiance E_c = sh[c] * AR_SH_L0
+const AR_REF_LUMA = 0.8;           // room luminance that maps to ambient multiplier 1.0
+const AR_MIN_MUL = 0.15;           // darkest allowed ambient multiplier (pitch-black room)
+const AR_MAX_MUL = 1.25;           // brightest allowed ambient multiplier (sunlit room)
+const AR_TINT_MIN = 0.5;           // per-channel tint clamp before normalization…
+const AR_TINT_MAX = 2.0;           // …tint only shifts hue, never brightens (peak renormed to 1)
+const AR_PRIMARY_GAIN = 0.35;      // strength of the directional ADD_RGBA accent
+const AR_AMBIENT_RADIUS_MIN = 10;  // ambient sphere absolute floor — uniform coverage intended
+const AR_AMBIENT_RADIUS_K = 6;     // ambient sphere radius = max(MIN, R * K)
+const AR_AMBIENT_SOFT = 1.0;       // ambient softEdge — scene sits deep inside, saturates to 1
+const AR_PRIMARY_RADIUS_K = 2.5;   // primary sphere radius (× sceneRadius) — surface crosses scene
+const AR_PRIMARY_OFFSET_K = 3;     // primary sphere offset along the light direction (× sceneRadius)
+const AR_PRIMARY_SOFT_K = 3.5;     // primary softEdge (× sceneRadius): gradient band spans the scene
+const AR_SDF_SMOOTH = 0.1;         // SDF smooth-union k for both layers (single-SDF: near no-op)
+const AR_DEBUG_PERIOD_S = 8;       // debug: brightness/tint sine-sweep period (s)
+const AR_DEBUG_LUMA_MIN = 0.15;    // debug: darkest synthetic luminance
+const AR_DEBUG_LUMA_MAX = 1.1;     // debug: brightest synthetic luminance
+const AR_DEBUG_ORBIT_RPS = 0.2;    // debug: light-direction orbit around the Y axis (rad/s)
+const AR_DEBUG_LIGHT_Y = 0.25;     // debug: fixed elevation of the orbiting light direction
+let arLightEnabled = false;  // resolved in resolvePlayerConfig (?arlight > manifest.player.arLight > off)
+let arLightDebug = false;    // ?arlightdebug=1 — synthetic sweep outside AR, independent of arlight
+let arLightLayers = null;    // { ambientEdit, ambientSdf, primaryEdit, primarySdf } once created
+let arLightR = 0.35;         // clamped sceneRadius the layer geometry was built from
+let lightProbe = null;       // XRLightProbe while granted (AR session on a supporting device)
+let arLightActive = false;   // estimates currently being applied (layers stay attached regardless)
+
+// created once at load (when arlight or its debug mode is on), AFTER sceneRadius is known — all
+// geometry derives from one clamped R so head-scale scenes (R ≲ 0.65) keep a real gradient band
+// instead of saturating modulate to a uniform wash (same scale bug class the reveal fixed via
+// revealK). NO absolute floors on the primary sphere/softEdge for that reason; the ambient floor
+// is fine because uniform coverage is intended there. A failure must never break playback.
+const createArLightLayers = () => {
+  if (arLightLayers) return;
+  try {
+    const R = Math.max(revealSceneRadius, 0.05);
+    arLightR = R;
+    // ambient: MULTIPLY over everything — sphere so big the whole scene sits at modulate 1
+    const ambientEdit = new SplatEdit({ rgbaBlendMode: SplatEditRgbaBlendMode.MULTIPLY, sdfSmooth: AR_SDF_SMOOTH, softEdge: AR_AMBIENT_SOFT });
+    const ambientSdf = new SplatEditSdf({
+      type: SplatEditSdfType.SPHERE,
+      radius: Math.max(AR_AMBIENT_RADIUS_MIN, R * AR_AMBIENT_RADIUS_K),
+      color: new THREE.Color(1, 1, 1),   // MULTIPLY identity: white…
+      opacity: 1                          // …and alpha × 1 = unchanged
+    });
+    ambientEdit.add(ambientSdf);          // child SDF → frame comes from matrixWorld under group
+    // primary: ADD_RGBA accent — the sphere SURFACE passes through the scene; the softEdge band
+    // around distance 0 is what creates the directional falloff (~0.6 → 0 across the scene)
+    const primaryEdit = new SplatEdit({ rgbaBlendMode: SplatEditRgbaBlendMode.ADD_RGBA, sdfSmooth: AR_SDF_SMOOTH, softEdge: R * AR_PRIMARY_SOFT_K });
+    const primarySdf = new SplatEditSdf({
+      type: SplatEditSdfType.SPHERE,
+      radius: R * AR_PRIMARY_RADIUS_K,
+      color: new THREE.Color(0, 0, 0),   // ADD identity: black…
+      opacity: 0                          // …opacity 0, ALWAYS — ADD_RGBA adds alpha too; nonzero
+    });                                   // would opacify hair wisps / silhouette anti-aliasing
+    primarySdf.position.set(0, 0, R * AR_PRIMARY_OFFSET_K);   // placeholder; repositioned per frame
+    primaryEdit.add(primarySdf);
+    // identity transforms directly under the root group; NOT under any SplatMesh → global edits.
+    // Do NOT use addSdf(): an orphan SDF ignores group's transform and the automatic recenter()
+    // 350 ms into every XR session would misplace the accent.
+    group.add(ambientEdit);
+    group.add(primaryEdit);
+    arLightLayers = { ambientEdit, ambientSdf, primaryEdit, primarySdf };
+  } catch (e) {
+    console.warn('AR light layers skipped', e);
+    arLightLayers = null;
+  }
+};
+
+// back to the do-nothing values (ambient: white × 1, primary: black + 0) — used at activation
+// (fresh session starts neutral until the first estimate) and at session end (no grading leak)
+const resetArLightIdentity = () => {
+  if (!arLightLayers) return;
+  arLightLayers.ambientSdf.color.setRGB(1, 1, 1);
+  arLightLayers.ambientSdf.opacity = 1;
+  arLightLayers.primarySdf.color.setRGB(0, 0, 0);
+  arLightLayers.primarySdf.opacity = 0;
+};
+
+// est contract (shared by real XRLightEstimate AND the debug fake — pinned because the real-AR
+// path has no automated gate): sphericalHarmonicsCoefficients is read by NUMERIC INDEX
+// (sh[0..2] — Float32Array(27) or plain Array both work, coefficient-major RGB interleaved);
+// primaryLightDirection / primaryLightIntensity are read ONLY via .x/.y/.z — real estimates are
+// DOMPointReadOnly, where [0]/[1]/[2] return undefined → NaN colors on the phone while an
+// array-shaped debug fake would still pass desktop smoke.
+const applyLightEstimate = (est) => {
+  if (!arLightLayers) return;
+  const sh = est.sphericalHarmonicsCoefficients;
+  if (!sh) return;
+  // ambient from SH L0 → irradiance, Rec.709 luminance → brightness multiplier + hue-only tint
+  const er = sh[0] * AR_SH_L0, eg = sh[1] * AR_SH_L0, eb = sh[2] * AR_SH_L0;
+  const y = 0.2126 * er + 0.7152 * eg + 0.0722 * eb;
+  const m = Math.min(AR_MAX_MUL, Math.max(AR_MIN_MUL, y / AR_REF_LUMA));
+  const yd = Math.max(y, 1e-4);
+  const clampTint = (v) => Math.min(AR_TINT_MAX, Math.max(AR_TINT_MIN, v));
+  let tr = clampTint(er / yd), tg = clampTint(eg / yd), tb = clampTint(eb / yd);
+  const tPeak = Math.max(tr, tg, tb);   // ≥ AR_TINT_MIN > 0 by construction
+  tr /= tPeak; tg /= tPeak; tb /= tPeak;
+  arLightLayers.ambientSdf.color.setRGB(m * tr, m * tg, m * tb);
+  // primary accent — d points FROM the probe TOWARD the light. Placement is fully group-local:
+  // rotate the world-space direction into group space each frame so offset AND radius live in
+  // the same units (recenter/grab/scale can't decouple them) and the accent stays world-stable
+  // under group rotation. sceneCenter := the group origin (off-center v2 scenes degrade the
+  // placement — accepted, same convention as the reveal effect).
+  const d = est.primaryLightDirection, li = est.primaryLightIntensity;
+  if (d && li) {
+    const dirLocal = _v.set(d.x, d.y, d.z)
+    .applyQuaternion(group.getWorldQuaternion(_q).invert()).normalize();
+    arLightLayers.primarySdf.position.copy(dirLocal).multiplyScalar(arLightR * AR_PRIMARY_OFFSET_K);
+    // HDR intensity (can exceed 1) → Reinhard tone-map, then gain. Opacity stays 0 (see above).
+    const pr = li.x / (1 + li.x), pg = li.y / (1 + li.y), pb = li.z / (1 + li.z);
+    arLightLayers.primarySdf.color.setRGB(pr * AR_PRIMARY_GAIN, pg * AR_PRIMARY_GAIN, pb * AR_PRIMARY_GAIN);
+  }
+};
+
+// ?arlightdebug=1 — synthetic estimate for desktop verification/tuning without a phone: luminance
+// sweeps dark-warm ↔ bright-cool on a slow sine while the light direction orbits the Y axis.
+// Feeds the SAME applyLightEstimate as real AR (duck-typed; {x,y,z} objects for the vectors, SH
+// values are L0 COEFFICIENTS — desired irradiance divided by AR_SH_L0 — so the sweep range
+// matches the documented brightness range). One reused object → no per-frame allocation.
+const arDebugEst = {
+  sphericalHarmonicsCoefficients: [0, 0, 0],
+  primaryLightDirection: { x: 0, y: AR_DEBUG_LIGHT_Y, z: 1 },
+  primaryLightIntensity: { x: 1, y: 1, z: 0.9 }
+};
+const syntheticLightEstimate = (tMs) => {
+  const sec = tMs / 1000;
+  const phase = 0.5 - 0.5 * Math.cos(sec * (2 * Math.PI / AR_DEBUG_PERIOD_S));   // 0→1→0
+  const y = AR_DEBUG_LUMA_MIN + (AR_DEBUG_LUMA_MAX - AR_DEBUG_LUMA_MIN) * phase;
+  const tr = 1 + (0.8 - 1) * phase;        // warm (1, .85, .7) at the dark end…
+  const tg = 0.85 + (0.9 - 0.85) * phase;  // …cool (.8, .9, 1) at the bright end
+  const tb = 0.7 + (1 - 0.7) * phase;
+  const lum = 0.2126 * tr + 0.7152 * tg + 0.0722 * tb;
+  const sh = arDebugEst.sphericalHarmonicsCoefficients;
+  sh[0] = (tr * y / lum) / AR_SH_L0;       // tint scaled to luminance y, expressed as L0 coeffs
+  sh[1] = (tg * y / lum) / AR_SH_L0;
+  sh[2] = (tb * y / lum) / AR_SH_L0;
+  const a = sec * AR_DEBUG_ORBIT_RPS;
+  const d = arDebugEst.primaryLightDirection;
+  d.x = Math.cos(a); d.y = AR_DEBUG_LIGHT_Y; d.z = Math.sin(a);
+  return arDebugEst;
+};
 
 addEventListener('resize', () => {
   camera.aspect = viewer.offsetWidth / viewer.offsetHeight;
@@ -470,6 +651,18 @@ const resolvePlayerConfig = (manifest) => {
       console.warn(`unknown maxsh value "${urlMaxSh}" — ignored`);
     }
   }
+  // AR environment lighting: ?arlight=on|off > manifest.player.arLight > off. New exports write
+  // arLight from the dialog (default true); the built-in off default applies only to packages
+  // WITHOUT manifest.player.arLight, so old packages are unchanged.
+  const urlArLight = urlParams.get('arlight')?.toLowerCase() ?? null;
+  if (urlArLight === 'on' || urlArLight === 'off') {
+    arLightEnabled = urlArLight === 'on';
+  } else {
+    if (urlArLight !== null) console.warn(`unknown arlight value "${urlArLight}" — ignored`);
+    arLightEnabled = mp.arLight === true;
+  }
+  // ?arlightdebug=1 — synthetic estimate outside AR (desktop tuning); independent of arlight
+  arLightDebug = urlParams.get('arlightdebug') === '1';
 };
 
 // Register the package service worker (sw.js, shipped in the package) — heavy .spz frames and
@@ -721,7 +914,7 @@ const startPlayback = () => {
   loadEl.style.opacity = '0';
   setTimeout(() => { loadEl.style.display = 'none'; }, 600);
   if (audioEl) audioEl.play().catch(() => { audioEl.muted = true; updateSound(); }); // autoplay blocked → start muted, toggle unmutes
-  renderer.setAnimationLoop((t) => {
+  renderer.setAnimationLoop((t, xrFrame) => {   // three passes (time, xrFrame) — xrFrame only in XR
     for (const o of animObjects) {
       if (o.meshes.length > 1 && (t - o.last) > (1000 / o.fps)) {
         o.meshes[o.idx].visible = false;
@@ -745,6 +938,15 @@ const startPlayback = () => {
       }
       for (const m of revealMeshes) m.updateVersion();
       if (p >= 1) endReveal();
+    }
+    // 💡 AR environment lighting — grade all splats from the phone's live estimate (getLightEstimate
+    // may be null for the first frames), or from the synthetic sweep in ?arlightdebug=1 (real
+    // estimates win while a probe is active; SplatEdit color/position writes are tiny — no throttle)
+    if (arLightActive && xrFrame && lightProbe) {
+      const est = xrFrame.getLightEstimate(lightProbe);
+      if (est) applyLightEstimate(est);
+    } else if (arLightDebug && arLightLayers) {
+      applyLightEstimate(syntheticLightEstimate(t));
     }
     // camera flythrough — pose from the spline on the shared scene clock (never in XR: headset owns the camera)
     if (camPathActive && camSpline && !renderer.xr.isPresenting) {
@@ -865,6 +1067,10 @@ async function load() {
   if (manifest.sceneRadius > 0) revealSceneRadius = manifest.sceneRadius;   // reveal scale (exporter-written)
   applyZoomMode();                     // orbit zoom limits (adaptive mode needs sceneRadius, so after it)
   registerOfflineCache();              // package SW (repeat-visit cache) when the export opted in
+  // 💡 AR light layers — created BEFORE any mesh exists (geometry needs sceneRadius, hence after
+  // it) so every mesh's one-time edit-enabled generator build happens behind the loading bar,
+  // not at AR entry. Identity values → rendering is unchanged until an estimate is applied.
+  if (arLightEnabled || arLightDebug) createArLightLayers();
   if (manifest.version === 2) return loadScene(manifest);
 
   // v1 (single avatar, progressive: head individual → tail zip) — exactly one animObject; frame 0

@@ -367,6 +367,9 @@ const registerSparkExport = (events: Events, scene: Scene) => {
                     { mode: 'manual', min: options.zoomMin, max: options.zoomMax } :
                     { mode: options.zoomMode },
                 offline: options.offline,
+                // written always (true or false) — explicit is easier to debug than absence;
+                // the built-in player default (off) applies only to packages without this field
+                arLight: options.arLight,
                 ...(camera ? { camera: { autoplay: options.cameraMode === 'auto' } } : {})
             };
             zip.file('manifest.json', JSON.stringify({
