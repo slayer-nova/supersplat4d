@@ -1063,16 +1063,13 @@ const addWatermark = () => {
   }
 };
 
-const startPlayback = () => {
-  if (started) return;
-  started = true;
-  if (watermarkEnabled) addWatermark();
-  startReveal();   // ✨ entrance reveal starts the moment the loading gate opens (covers pop-in)
-  playStartMs = performance.now();
-  loadEl.style.opacity = '0';
-  setTimeout(() => { loadEl.style.display = 'none'; }, 600);
-  if (audioEl) audioEl.play().catch(() => { audioEl.muted = true; updateSound(); }); // autoplay blocked → start muted, toggle unmutes
-  renderer.setAnimationLoop((t, xrFrame) => {   // three passes (time, xrFrame) — xrFrame only in XR
+// The render loop must run BEFORE the statics finish loading: SOG (PCSOGSZIP) statics only
+// resolve SplatMesh.initialized once renders are pumping (SPZ resolves without a render), so
+// awaiting them before the loop started dead-locked the player at "Loading…". This is now
+// started in load() via renderer.setAnimationLoop(renderFrame); startPlayback() below only
+// opens the reveal/overlay/audio gate. Everything the frame does before playback is either
+// empty (animObjects) or gated (revealActive/camPathActive/arLightActive) — it just renders.
+const renderFrame = (t, xrFrame) => {   // three passes (time, xrFrame) — xrFrame only in XR
     for (const o of animObjects) {
       if (o.meshes.length > 1 && (t - o.last) > (1000 / o.fps)) {
         o.meshes[o.idx].visible = false;
@@ -1122,7 +1119,17 @@ const startPlayback = () => {
     else if (flyActive && !camPathActive) flyControls.update(camera, camera); // 🕹 fly — SparkControls tracks its own clock (moves the camera object itself)
     else if (!camPathActive) controls.update();                     // headset owns the camera in XR; OrbitControls.update() ignores 'enabled' + clamps radius → skip while the path owns the camera
     renderer.render(scene, camera);
-  });
+};
+
+const startPlayback = () => {
+  if (started) return;
+  started = true;
+  if (watermarkEnabled) addWatermark();
+  startReveal();   // ✨ entrance reveal starts the moment the loading gate opens (covers pop-in)
+  playStartMs = performance.now();
+  loadEl.style.opacity = '0';
+  setTimeout(() => { loadEl.style.display = 'none'; }, 600);
+  if (audioEl) audioEl.play().catch(() => { audioEl.muted = true; updateSound(); }); // autoplay blocked → start muted, toggle unmutes
 };
 
 // persistent mute/unmute toggle — never hides after being pressed
@@ -1216,6 +1223,7 @@ const setBar = (n, total) => { loadBar.style.width = (n / total * 100).toFixed(1
 
 // ---- load (dispatch on manifest version) ----------------------------------
 async function load() {
+  renderer.setAnimationLoop(renderFrame);   // pump renders during load so SOG statics can decode
   const manifest = await fetch('./manifest.json').then(r => {
     if (!r.ok) throw new Error('manifest ' + r.status);
     return r.json();
@@ -1296,7 +1304,11 @@ async function loadScene(manifest) {
 
   for (const o of statics) {
     const buf = await fetch('./' + o.src).then((r) => { if (!r.ok) throw new Error(o.src + ' ' + r.status); return r.arrayBuffer(); });
-    const m = new SplatMesh({ fileBytes: new Uint8Array(buf), fileType: 'spz' });
+    // Spark requires an EXPLICIT fileType (it does NOT sniff fileBytes — omitting it throws
+    // "Unknown file type"). .sog statics use Spark's native PlayCanvas-SOG decoder ('pcsogszip');
+    // .spz statics stay 'spz'. Both are world-transform-baked → loaded at identity.
+    const m = new SplatMesh({ fileBytes: new Uint8Array(buf),
+      fileType: /\.sog$/i.test(o.src) ? 'pcsogszip' : 'spz' });
     if (maxShClamp !== null) m.maxSh = maxShClamp;   // before the first render builds the generator
     group.add(m);
     revealAdd(m);

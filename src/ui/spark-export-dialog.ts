@@ -1,4 +1,4 @@
-import { BooleanInput, Button, Container, Label, NumericInput, SelectInput } from '@playcanvas/pcui';
+import { BooleanInput, Button, Container, Label, NumericInput, SelectInput, TextInput } from '@playcanvas/pcui';
 
 // Spark player export options dialog: camera-path playback mode, entrance (reveal) effect and
 // duration. Shown by sparkExport (src/spark-export.ts) BEFORE encoding starts; the choices land in
@@ -22,6 +22,8 @@ interface SparkExportOptions {
     zoomMax: number;
     offline: boolean;
     arLight: boolean;
+    sogStatics: boolean;   // compress SH0 statics to SOG (server-side) instead of SPZ
+    sogUrl: string;        // FlexAvatar server base URL that hosts /api/ply_to_sog
 }
 
 class SparkExportDialog extends Container {
@@ -168,6 +170,25 @@ class SparkExportDialog extends Container {
         arLightRow.append(arLightLabel);
         arLightRow.append(arLightInput);
 
+        // SOG static compression: SH0 statics -> PlayCanvas SOG via the FlexAvatar server's
+        // /api/ply_to_sog. SOG is per-object 16-bit log-quantized over each object's OWN extent,
+        // so it has NONE of the SPZ 24-bit fixed-point ±2048 world-range cliff that tore
+        // far-from-origin / later-placed statics. SH-kept statics still use SPZ (see spark-export).
+        const sogLabel = new Label({ class: 'label', text: 'SOG static (best quality)' });
+        const sogInput = new BooleanInput({ class: 'boolean-input', value: false });
+        const sogRow = new Container({ class: 'row' });
+        sogRow.append(sogLabel);
+        sogRow.append(sogInput);
+
+        const sogUrlLabel = new Label({ class: 'label', text: 'SOG server URL' });
+        const sogUrlInput = new TextInput({ value: localStorage.getItem('spark.sogUrl') || 'http://localhost:8123' });
+        const sogUrlRow = new Container({ class: 'row', hidden: true });
+        sogUrlRow.append(sogUrlLabel);
+        sogUrlRow.append(sogUrlInput);
+        sogInput.on('change', (value: boolean) => {
+            sogUrlRow.hidden = !value;
+        });
+
         // content
         const content = new Container({ id: 'content' });
         content.append(cameraRow);
@@ -180,6 +201,8 @@ class SparkExportDialog extends Container {
         content.append(zoomRangeRow);
         content.append(offlineRow);
         content.append(arLightRow);
+        content.append(sogRow);
+        content.append(sogUrlRow);
 
         // footer
         const cancelButton = new Button({ class: 'button', text: 'Cancel' });
@@ -224,10 +247,15 @@ class SparkExportDialog extends Container {
             zoomMin: Math.min(zoomMinInput.value, zoomMaxInput.value),
             zoomMax: Math.max(zoomMinInput.value, zoomMaxInput.value),
             offline: !!offlineInput.value,
-            arLight: !!arLightInput.value
+            arLight: !!arLightInput.value,
+            sogStatics: !!sogInput.value,
+            sogUrl: (String(sogUrlInput.value || 'http://localhost:8123').trim().replace(/\/+$/, ''))
         });
 
-        exportButton.on('click', () => finish(collect()));
+        exportButton.on('click', () => {
+            if (sogInput.value) localStorage.setItem('spark.sogUrl', String(sogUrlInput.value || '').trim());
+            finish(collect());
+        });
         cancelButton.on('click', () => finish(null));
 
         // click outside the dialog cancels
@@ -262,6 +290,9 @@ class SparkExportDialog extends Container {
                 keepShSelect.value = 'lito';
                 durationInput.value = 4.5;
                 durationInput.enabled = true;
+                sogInput.value = false;
+                sogUrlRow.hidden = true;
+                sogUrlInput.value = localStorage.getItem('spark.sogUrl') || 'http://localhost:8123';
 
                 this.hidden = false;
                 this.dom.focus();

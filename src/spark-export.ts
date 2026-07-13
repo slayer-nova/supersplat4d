@@ -191,6 +191,71 @@ const staticToSpzSh = async (splat: any, bands: number): Promise<{ spz: Uint8Arr
     return { spz, n, shDegree: bands };
 };
 
+// static SH0 splat -> baked binary 3DGS .ply carrying exactly the props ply_to_sog4d.py needs
+// (x,y,z, f_dc_0-2, opacity, scale_0-2, rot_0-3 — no normals; read by name so order is free).
+// Same baked SingleSplat extraction as staticToSpz (world transform baked, deleted filtered,
+// quats normalized). Little-endian body matches the header (browsers run on LE hardware).
+const staticToPly = (splat: any): { ply: Uint8Array, n: number } => {
+    const state = splat.splatData.getProp('state') as Uint8Array | undefined;
+    const total = splat.splatData.numSplats;
+    const single = new SingleSplat(MEMBERS, { bakeFullWorldTransform: true });
+    let n = 0;
+    for (let i = 0; i < total; i++) {
+        if (!state || (state[i] & State.deleted) === 0) n++;
+    }
+    const STRIDE = 14; // x y z  f_dc0 f_dc1 f_dc2  opacity  scale0 scale1 scale2  rot0 rot1 rot2 rot3
+    const body = new Float32Array(n * STRIDE);
+    let k = 0;
+    for (let i = 0; i < total; i++) {
+        if (state && (state[i] & State.deleted) !== 0) continue;
+        single.read(splat, i);
+        const d = single.data;
+        const l2 = d.x * d.x + d.z * d.z;
+        if (l2 > exportMaxL2) exportMaxL2 = l2;
+        const w = d.rot_0, x = d.rot_1, y = d.rot_2, z = d.rot_3;   // native (w,x,y,z)
+        const l = Math.hypot(w, x, y, z) || 1;
+        const o = k * STRIDE;
+        body[o] = d.x; body[o + 1] = d.y; body[o + 2] = d.z;
+        body[o + 3] = d.f_dc_0; body[o + 4] = d.f_dc_1; body[o + 5] = d.f_dc_2;
+        body[o + 6] = d.opacity;
+        body[o + 7] = d.scale_0; body[o + 8] = d.scale_1; body[o + 9] = d.scale_2;
+        body[o + 10] = w / l; body[o + 11] = x / l; body[o + 12] = y / l; body[o + 13] = z / l;
+        k++;
+    }
+    const header =
+        'ply\nformat binary_little_endian 1.0\n' +
+        `element vertex ${n}\n` +
+        'property float x\nproperty float y\nproperty float z\n' +
+        'property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n' +
+        'property float opacity\n' +
+        'property float scale_0\nproperty float scale_1\nproperty float scale_2\n' +
+        'property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n' +
+        'end_header\n';
+    const head = new TextEncoder().encode(header);
+    const bodyBytes = new Uint8Array(body.buffer, body.byteOffset, n * STRIDE * 4);
+    const ply = new Uint8Array(head.length + bodyBytes.length);
+    ply.set(head, 0);
+    ply.set(bodyBytes, head.length);
+    return { ply, n };
+};
+
+// static SH0 splat -> PlayCanvas SOG (.sog) via the FlexAvatar server's /api/ply_to_sog.
+// SOG's per-object 16-bit log-quantized positions have NONE of SPZ's 24-bit fixed-point ±2048
+// world-range cliff, so far-from-origin / later-placed statics stay sharp. Encoding is
+// Python-only (ply_to_sog4d.py), so we round-trip the baked .ply through the server.
+const staticToSog = async (splat: any, sogUrl: string): Promise<{ sog: Uint8Array, n: number }> => {
+    const { ply, n } = staticToPly(splat);
+    const form = new FormData();
+    // cast: TS's newer lib types Uint8Array as Uint8Array<ArrayBufferLike>, not the
+    // Uint8Array<ArrayBuffer> that BlobPart wants — a valid Blob part at runtime regardless.
+    form.append('file', new Blob([ply as BlobPart], { type: 'application/octet-stream' }), 'static.ply');
+    const res = await fetch(`${sogUrl}/api/ply_to_sog`, { method: 'POST', body: form });
+    if (!res.ok) {
+        throw new Error(`SOG server ${res.status} at ${sogUrl}: ${(await res.text().catch(() => '')).slice(0, 300)}`);
+    }
+    return { sog: new Uint8Array(await res.arrayBuffer()), n };
+};
+
 const registerSparkExport = (events: Events, scene: Scene) => {
     // options dialog, created on first export (self-attached: editor.ts stays untouched)
     let dialog: SparkExportDialog | null = null;
@@ -274,6 +339,25 @@ const registerSparkExport = (events: Events, scene: Scene) => {
             // 2. encode every object under objects/ (scene order); statics -> objects/<id>.spz,
             // atlases -> objects/<id>/frames/ HEAD (instant start) + objects/<id>/rest.zip TAIL
             const manifestObjects: any[] = [];
+
+            // SOG static mode: each object's conversion is an INDEPENDENT server round-trip, so
+            // run them CONCURRENTLY up front (capped) instead of one-at-a-time in the loop — the
+            // server spawns the conversions in parallel across CPU cores. Results are cached and
+            // the loop below just packages them in scene order (manifest indexing unchanged).
+            const sogCache = new Map<any, { sog: Uint8Array, n: number }>();
+            if (options.sogStatics) {
+                const sogTargets = exportables.filter(s =>
+                    !(s.isAtlas && s.atlasFrames?.length) && keptShBands(s, options.keepSh) === 0);
+                const CAP = 8; // concurrent server conversions (each spawns a Python subprocess)
+                for (let i = 0; i < sogTargets.length; i += CAP) {
+                    const batch = sogTargets.slice(i, i + CAP);
+                    const results = await Promise.all(batch.map(s => staticToSog(s, options.sogUrl)));
+                    batch.forEach((s, j) => sogCache.set(s, results[j]));
+                    const conv = Math.min(i + CAP, sogTargets.length);
+                    events.fire('progressUpdate', { text: `Converting SOG (${conv}/${sogTargets.length})`, progress: Math.round(conv / Math.max(1, sogTargets.length) * 30) });
+                }
+            }
+
             for (let objIndex = 0; objIndex < exportables.length; objIndex++) {
                 const splat = exportables[objIndex];
                 const id = `${objIndex}_${sanitize(splat.name)}`;
@@ -322,9 +406,19 @@ const registerSparkExport = (events: Events, scene: Scene) => {
                     // takes the unchanged compact SH0 path. shDegree is informational for SH
                     // statics only (the .spz header is authoritative for the player).
                     const shBands = keptShBands(splat, options.keepSh);
-                    const { spz, n } = shBands > 0 ? await staticToSpzSh(splat, shBands) : await staticToSpz(splat);
-                    zip.file(`objects/${id}.spz`, spz);
-                    manifestObjects.push({ id, type: 'static', src: `objects/${id}.spz`, numSplats: n, ...(shBands > 0 ? { shDegree: shBands } : {}) });
+                    // SOG static mode: SH0 statics -> server-side SOG (no SPZ ±2048 range cliff,
+                    // so far/late statics stay sharp). SH-kept statics stay on SPZ (SOG-with-SH is
+                    // a later refinement). Any other static export path is byte-for-byte unchanged.
+                    if (options.sogStatics && shBands === 0) {
+                        // pre-converted concurrently above; just package it here
+                        const { sog, n } = sogCache.get(splat)!;
+                        zip.file(`objects/${id}.sog`, sog);
+                        manifestObjects.push({ id, type: 'static', src: `objects/${id}.sog`, numSplats: n });
+                    } else {
+                        const { spz, n } = shBands > 0 ? await staticToSpzSh(splat, shBands) : await staticToSpz(splat);
+                        zip.file(`objects/${id}.spz`, spz);
+                        manifestObjects.push({ id, type: 'static', src: `objects/${id}.spz`, numSplats: n, ...(shBands > 0 ? { shDegree: shBands } : {}) });
+                    }
                     done++;
                     events.fire('progressUpdate', { text: `Encoding ${id}`, progress: Math.round(done / totalUnits * 92) });
                 }
